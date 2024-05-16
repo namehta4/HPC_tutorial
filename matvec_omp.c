@@ -1,18 +1,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "omp.h"
 
 //Function declaration
 static void matvec(int, int, double*, double*, double**, double*, double*);
 
 int main(int argc, char** argv)
-{
+{ 
   int n=80000;        //matrix dimension rows
   int m=5000;         //matrix dimension columns
   double *x,*b,*a,*p; //Pointer to input layer,biases, and result (activation)
   double** w;         //Pointer to weights matrix
 
-  clock_t t;
+  double t1,t2;
   
   //Allocate memory for the arrays
   x = (double*)malloc(m*sizeof(double));
@@ -40,13 +41,13 @@ int main(int argc, char** argv)
       w[i][j] = 1;
 
 
-  t = clock();
+  t1 = omp_get_wtime();
   //Function call for matrix-vector multiplication
-  for (int nstep=0;nstep<100;nstep++)
+  for(int nstep=0;nstep<100;nstep++)
     matvec(n,m,x,b,w,p,a);
-  t = clock()-t;
-  double time_taken = ((double)t)/CLOCKS_PER_SEC;
-  printf("Time taken: %f (sec) \n",time_taken);
+  t2 = omp_get_wtime();
+  double time_taken = t2-t1;
+  printf("Time taken: %.15f (sec) \n",t2-t1);
 
 
   //Free the memory utilized by the array
@@ -65,10 +66,17 @@ int main(int argc, char** argv)
 //Function definition
 static void matvec(int n, int m, double* x, double* b, double** w, double* p, double* a)
 {
-  for(int i=0;i<n;i++)
-    for(int j=0;j<m;j++)
-      p[i] += w[i][j]*x[j];
+  int i,j,sum;
+  #pragma omp parallel for private(i,j,sum) schedule(static) 
+  for(i=0;i<n;i++)
+  {
+    sum = 0.0;
+    for(j=0;j<m;j++)
+      sum += w[i][j]*x[j];
+    p[i] += sum;
+  }
   
-  for(int i=0;i<n;i++)
+  #pragma omp parallel for num_threads(4) 
+  for(i=0;i<n;i++)
     a[i] = p[i]+b[i];
 }
