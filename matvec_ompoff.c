@@ -9,7 +9,7 @@ static void matvec(int, int, double*, double*, double*, double*, double*);
 int main(int argc, char** argv)
 { 
   int n=80000;        //matrix dimension rows
-  int m=5000;         //matrix dimension columns
+  int m=500;          //matrix dimension columns
   double *x,*b,*a,*p; //Pointer to input layer,biases, and result (activation)
   double* w;          //Pointer to weights matrix
 
@@ -41,7 +41,6 @@ int main(int argc, char** argv)
 
   t1 = omp_get_wtime();
   //Function call for matrix-vector multiplication
-  #pragma omp target enter data map(to:n,m,x[0:m],p[0:n],a[0:n],b[0:n],w[0:n*m])
   {
   for(int nstep=0;nstep<100;nstep++)
     matvec(n,m,x,b,w,p,a);
@@ -65,6 +64,7 @@ int main(int argc, char** argv)
 //Function definition
 static void matvec(int n, int m, double* x, double* b, double* w, double* p, double* a)
 {  
+  #pragma omp target enter data map(to:n,m,x[0:m],p[0:n],a[0:n],b[0:n],w[0:n*m])
   #pragma omp target teams distribute parallel for default(none) shared(x,w,p,n,m) schedule(static) 
   for(int i=0;i<n;i++)
   {

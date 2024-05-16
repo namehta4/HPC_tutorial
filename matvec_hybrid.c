@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include "mpi.h"
+#include "omp.h"
 
 //Function declaration
 static void matvec(int, int, double*, double*, double*, double*, double*);
@@ -89,12 +90,16 @@ static void matvec(int n, int m, double* x, double* b, double* w, double* p, dou
   MPI_Bcast(x, m, MPI_DOUBLE, 0, MPI_COMM_WORLD);// Broadcast the Vector
   
   //Product calculation loop
+  #pragma omp target enter data map(to:n,m,size,x[0:m],locp[0:n/size],loca[0:n/size],locb[0:n/size],locw[0:n*m/size])
+  #pragma omp target teams distribute parallel for default(none) shared(x,locw,locp,n,m,size) schedule(static) 
   for(int i=0;i<n/size;i++)
     for(int j=0;j<m;j++)
       locp[i] += locw[i*m+j]*x[j];
   
+  #pragma omp target teams distribute parallel for
   for(int i=0;i<n/size;i++)
     loca[i] = locp[i]+locb[i];
+  #pragma omp target exit data map(from:loca[0:n/size])
 
   MPI_Barrier(MPI_COMM_WORLD);
   MPI_Gather(loca, n/size, MPI_DOUBLE, a, n/size, MPI_DOUBLE, 0, MPI_COMM_WORLD); // Gather the results

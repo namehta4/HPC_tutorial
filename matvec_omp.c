@@ -9,7 +9,7 @@ static void matvec(int, int, double*, double*, double**, double*, double*);
 int main(int argc, char** argv)
 { 
   int n=80000;        //matrix dimension rows
-  int m=5000;         //matrix dimension columns
+  int m=500;          //matrix dimension columns
   double *x,*b,*a,*p; //Pointer to input layer,biases, and result (activation)
   double** w;         //Pointer to weights matrix
 
