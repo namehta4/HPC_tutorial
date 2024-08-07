@@ -77,4 +77,5 @@ static void matvec(int n, int m, double* x, double* b, double* w, double* p, dou
   #pragma omp target teams distribute parallel for
   for(int i=0;i<n;i++)
     a[i] = p[i]+b[i];
+  #pragma omp target exit data map(from:a[0:n])
 }
