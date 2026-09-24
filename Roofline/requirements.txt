@@ -1,0 +1,16 @@
+# Python dependencies for this tutorial. See ENV_SETUP.md for the exact
+# module-load + pip-install sequence used on Perlmutter (NERSC); adapt the
+# module names for your own system, but these pip packages are portable.
+#
+# Match the CUDA toolkit suffix (cuXX) to your system's installed CUDA
+# version -- these examples target CUDA 13.x. For CUDA 12.x, use
+# cupy-cuda12x and cuquantum-python-cu12 instead.
+
+numpy>=2.0
+scipy>=1.9
+matplotlib>=3.9
+pytest>=8.0
+torch>=2.6          # CPU is sufficient -- only used as the GQE correctness reference
+cupy-cuda13x         # match to your CUDA version: cupy-cuda12x for CUDA 12.x
+cuquantum-python-cu13  # match to your CUDA version: cuquantum-python-cu12 for CUDA 12.x
+qutip>=5.0           # optional cross-check tool, not required by the tutorial's own code

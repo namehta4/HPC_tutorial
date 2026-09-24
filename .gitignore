@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.cubin
+*.ncu-rep
+*.nsys-rep
+*.sqlite
+.pytest_cache/

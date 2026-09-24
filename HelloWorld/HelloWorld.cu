@@ -11,7 +11,7 @@ int main ()
   printf("Aloha from CPU \n");
 
   //Launch the CUDA kernel
-  AlohaGPU<<1,5>>();
+  AlohaGPU<<<1,5>>>();
   cudaDeviceSynchronize();
 
   return 0;

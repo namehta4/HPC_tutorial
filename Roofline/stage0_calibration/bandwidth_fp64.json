@@ -1,0 +1,7 @@
+{
+  "kernel": "stream_triad",
+  "dtype": "fp64",
+  "n_elements": 134217728,
+  "achieved_gbps": 589.4856088025166,
+  "device": "NVIDIA A100-SXM4-40GB"
+}
