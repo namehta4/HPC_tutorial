@@ -1,36 +1,39 @@
 #!/usr/bin/env python3
-"""Stage 4: tensor-core GEMM + multi-stream GQE policy forward pass.
+"""Stage 4: fused tensor-core + multi-stream GQE policy forward pass.
 
 Run ./build.sh first.
 
-Two independent optimizations, combined:
+What stage3's profile says: with the linear layers on tensor cores, those
+GEMMs are only ~7% of the forward pass's GPU time. The other ~90% is ~175
+tiny memory-bound CuPy kernels -- bias adds, GELU, the pieces of layernorm
+and softmax, transposes, fp16<->fp32 casts -- each reading and writing the
+activations from HBM. So stage4 fuses that glue into the kernels that
+already hold the data (kernels/policy_forward_gemm.cu), cutting a forward
+pass from ~180 kernel launches to ~16:
 
-  1. TENSOR-CORE LINEAR LAYERS. Every linear layer in the policy network
-     (`qkv`, `proj`, both MLP layers, `head`) is replaced with a call to
-     `batched_gemm_tc_fp16` (kernels/policy_forward_gemm.cu), a hand-written
-     WMMA (Warp Matrix Multiply-Accumulate) kernel that runs on the GPU's
-     tensor cores instead of ordinary CUDA cores. Unlike VQE's 2x2 gates,
-     these ARE genuine matrix multiplies of a shape tensor cores are built
-     for (padded to multiples of 16 where needed -- see
-     policy_forward_gemm.py's padding helper). At this network's default
-     size (d_model=32, batch~32) these GEMMs are small enough that the win
-     is modest; the point is to show the mechanism and let you re-run at
-     larger --d-model/--batch-size to see the tensor-core advantage grow
-     (compare against stage0_calibration/RESULTS.md's measured fp16 vs
-     fp32 GEMM peak FLOP/s on this GPU).
+  1. FUSED TENSOR-CORE LINEAR LAYERS. Every linear layer (`qkv`, `proj`,
+     both MLP layers, `head`) is one call to `gemm_tc_fp16_fused`, a
+     hand-written WMMA (Warp Matrix Multiply-Accumulate) kernel that runs
+     on the GPU's tensor cores and applies the layer's epilogue -- bias,
+     GELU, or the residual add -- before writing its output. Each layer is
+     ONE GEMM over all batch*seq_len rows; multiplying each row on its own
+     (as a 16-row-padded tile) would waste 15/16 of the tensor-core work.
 
-  2. MULTI-STREAM SCALING. `run_multistream_sampling_loop` demonstrates the
+  2. FUSED LAYERNORM AND ATTENTION. Each layernorm is one kernel (the first
+     one fused with the embedding lookup), and causal self-attention is one
+     kernel per (batch, head) doing scores, mask, softmax and attn @ v in
+     shared memory. Attention stays on CUDA cores: at seq_len 8 each head is
+     an 8x8x32 problem, far too small for tensor cores to pay off.
+
+  3. MULTI-STREAM SCALING. `run_multistream_sampling_loop` demonstrates the
      GQE outer loop's actual concurrency pattern: sampling several
      INDEPENDENT batches of candidate gate sequences (e.g. for different
      temperature/exploration settings, or simply to pipeline generation
      with downstream VQE energy evaluation) on separate CUDA streams, so
      they execute concurrently on the GPU instead of one-after-another.
 
-Attention's QK^T and attn@V matmuls remain plain CuPy batched matmuls (not
-rewritten as custom WMMA calls) -- this tutorial's teaching point is "here
-is how you'd hand-write a tensor-core GEMM and where it fits," not "here is
-a from-scratch FlashAttention," which is a substantially larger undertaking
-this tutorial's scope doesn't need.
+Precision: GEMM inputs are fp16; accumulation, epilogues, layernorm and
+softmax are fp32, and the residual stream is kept in fp32.
 """
 from __future__ import annotations
 
@@ -50,6 +53,11 @@ from common.gqe_policy_ref import GQEConfig, deterministic_weights, export_weigh
 KERNELS_DIR = Path(__file__).resolve().parent / "kernels"
 _MODULE_CACHE: dict[str, cp.RawModule] = {}
 
+# Epilogue modes of gemm_tc_fp16_fused (must match kernels/policy_forward_gemm.cu).
+EPI_STORE_F16, EPI_BIAS_GELU_F16, EPI_RESIDUAL_ADD_F32, EPI_STORE_F32 = 0, 1, 2, 3
+LN_EPS = 1e-5
+LINEAR_WEIGHTS = ("qkv.weight", "proj.weight", "mlp.0.weight", "mlp.2.weight", "head.weight")
+
 
 def _get_module(cubin_name: str) -> cp.RawModule:
     if cubin_name not in _MODULE_CACHE:
@@ -60,112 +68,86 @@ def _get_module(cubin_name: str) -> cp.RawModule:
     return _MODULE_CACHE[cubin_name]
 
 
+def _kernel(name: str):
+    return _get_module("policy_forward_gemm.cubin").get_function(name)
+
+
 def _pad_to_multiple(n: int, m: int = 16) -> int:
     return ((n + m - 1) // m) * m
 
 
-def batched_gemm_tc(A: cp.ndarray, B: cp.ndarray) -> cp.ndarray:
-    """C[b] = A[b] @ B for a batch of A against one shared weight B, via the
-    hand-written WMMA kernel. A: (batch, M, K) fp16, B: (K, N) fp16.
-    Returns (batch, M, N) fp32. Pads M/K/N up to multiples of 16 (WMMA's
-    fp16 tile requirement) and slices the result back down -- zero-padding
-    doesn't change the non-padded output entries."""
-    batch, M, K = A.shape
-    K2, N = B.shape
-    assert K == K2
-
-    Mp, Kp, Np = _pad_to_multiple(M), _pad_to_multiple(K), _pad_to_multiple(N)
-
-    if (Mp, Kp, Np) != (M, K, N):
-        A_padded = cp.zeros((batch, Mp, Kp), dtype=cp.float16)
-        A_padded[:, :M, :K] = A
-        B_padded = cp.zeros((Kp, Np), dtype=cp.float16)
-        B_padded[:K, :N] = B
-    else:
-        A_padded, B_padded = A, B
-
-    C_padded = cp.zeros((batch, Mp, Np), dtype=cp.float32)
-
-    mod = _get_module("policy_forward_gemm.cubin")
-    kernel = mod.get_function("batched_gemm_tc_fp16")
-    grid = (Mp // 16, Np // 16, batch)
-    block = (32,)
-    kernel(grid, block, (A_padded, B_padded, C_padded, batch, Mp, Np, Kp))
-
-    if (Mp, Kp, Np) != (M, K, N):
-        return C_padded[:, :M, :N]
-    return C_padded
+def linear_tc(x16: cp.ndarray, weight16: cp.ndarray, out: cp.ndarray, mode: int, bias: cp.ndarray | None = None):
+    """out = epilogue(x16 @ weight16.T) on tensor cores, as ONE GEMM over all
+    rows. x16: (M, K) fp16, weight16: (N, K) fp16 (PyTorch Linear layout),
+    out: (M, N), fp16 or fp32 depending on `mode` (see EPI_*)."""
+    M, K = x16.shape
+    N = weight16.shape[0]
+    grid = ((M + 31) // 32, (N + 31) // 32)
+    _kernel("gemm_tc_fp16_fused")(
+        grid, (128,),
+        (x16, weight16, bias if bias is not None else out, out,
+         np.int32(M), np.int32(N), np.int32(K), np.int32(mode), np.int32(bias is not None)),
+    )
 
 
-def layer_norm(x: cp.ndarray, weight: cp.ndarray, bias: cp.ndarray, eps: float = 1e-5) -> cp.ndarray:
-    x32 = x.astype(cp.float32)
-    mean = x32.mean(axis=-1, keepdims=True)
-    var = x32.var(axis=-1, keepdims=True)
-    return (x32 - mean) / cp.sqrt(var + eps) * weight.astype(cp.float32) + bias.astype(cp.float32)
+def layer_norm(x32: cp.ndarray, weight: cp.ndarray, bias: cp.ndarray, out16: cp.ndarray):
+    """out16[row] = layernorm(x32[row]); one warp per row."""
+    M, D = x32.shape
+    _kernel("layernorm_f32_to_f16")(((M + 3) // 4,), (128,),
+                                    (x32, weight, bias, out16, np.int32(M), np.int32(D), np.float32(LN_EPS)))
 
 
-def gelu(x: cp.ndarray) -> cp.ndarray:
-    return 0.5 * x * (1.0 + cp.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * x**3)))
-
-
-def linear_tc(x: cp.ndarray, weight: cp.ndarray) -> cp.ndarray:
-    """x: (B, T, D_in) fp32-or-fp16, weight: (D_out, D_in) -> (B, T, D_out) fp32,
-    computed via the tensor-core batched GEMM (x reshaped to (B*T, D_in))."""
-    B, T, D_in = x.shape
-    D_out = weight.shape[0]
-    x_flat = x.reshape(B * T, 1, D_in).astype(cp.float16)
-    w_t = weight.T.astype(cp.float16)  # (D_in, D_out)
-    out = batched_gemm_tc(x_flat, w_t)  # (B*T, 1, D_out)
-    return out.reshape(B, T, D_out)
-
-
-def attention_tc(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp.ndarray:
-    B, T, D = x.shape
-    H, Dh = cfg.n_heads, D // cfg.n_heads
-    prefix = f"blocks.{layer_idx}.attn"
-
-    qkv = linear_tc(x, w[f"{prefix}.qkv.weight"])  # tensor-core GEMM
-    qkv = qkv.reshape(B, T, 3, H, Dh)
-    q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
-    q, k, v = (cp.transpose(t, (0, 2, 1, 3)) for t in (q, k, v))
-
-    scores = cp.matmul(q, cp.transpose(k, (0, 1, 3, 2))) / np.sqrt(Dh)  # plain CuPy batched matmul
-    causal_mask = cp.triu(cp.ones((T, T), dtype=cp.bool_), k=1)
-    scores = cp.where(causal_mask, cp.float32(-1e9), scores)
-    scores = scores - cp.max(scores, axis=-1, keepdims=True)
-    attn = cp.exp(scores)
-    attn = attn / cp.sum(attn, axis=-1, keepdims=True)
-
-    out = cp.matmul(attn, v)
-    out = cp.transpose(out, (0, 2, 1, 3)).reshape(B, T, D)
-    return linear_tc(out, w[f"{prefix}.proj.weight"])  # tensor-core GEMM
-
-
-def block_tc(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp.ndarray:
-    prefix = f"blocks.{layer_idx}"
-    ln1 = layer_norm(x, w[f"{prefix}.ln1.weight"], w[f"{prefix}.ln1.bias"])
-    x = x + attention_tc(ln1, w, cfg, layer_idx)
-
-    ln2 = layer_norm(x, w[f"{prefix}.ln2.weight"], w[f"{prefix}.ln2.bias"])
-    h = linear_tc(ln2, w[f"{prefix}.mlp.0.weight"]) + w[f"{prefix}.mlp.0.bias"]
-    h = gelu(h)
-    h = linear_tc(h, w[f"{prefix}.mlp.2.weight"]) + w[f"{prefix}.mlp.2.bias"]
-    return x + h
+def attention(qkv16: cp.ndarray, out16: cp.ndarray, B: int, cfg: GQEConfig):
+    """Fused causal self-attention, one CUDA block per (batch, head)."""
+    T, D, H = cfg.seq_len, cfg.d_model, cfg.n_heads
+    Dh = D // H
+    smem = (3 * T * Dh + T * T) * 4
+    _kernel("causal_attention")((B * H,), (128,),
+                                (qkv16, out16, np.int32(T), np.int32(D), np.int32(H), np.float32(1.0 / np.sqrt(Dh))),
+                                shared_mem=smem)
 
 
 def policy_forward_tc(tokens_batch: cp.ndarray, w: dict, cfg: GQEConfig) -> cp.ndarray:
-    """This is the 'policy_forward' kernel for stage4: batched, tensor-core-
-    GEMM-backed linear layers throughout."""
+    """This is the 'policy_forward' kernel for stage4: ~16 fused kernel
+    launches per forward pass, all linear layers on tensor cores."""
     B, T = tokens_batch.shape
-    tok_emb = w["tok_emb.weight"][tokens_batch]
-    pos_emb = w["pos_emb"][:, :T, :]
-    x = (tok_emb + pos_emb).astype(cp.float32)
+    D, F, V = cfg.d_model, cfg.d_ff, cfg.vocab_size
+    if D % 16 or F % 16 or V % 16:
+        raise ValueError(f"d_model ({D}), d_ff ({F}) and vocab_size ({V}) must be multiples of 16 "
+                         "for the WMMA fp16 tile")
+    M = B * T
+    Mp = _pad_to_multiple(M)  # GEMM row count must be a multiple of 16; extra rows are padding
 
-    for layer_idx in range(cfg.n_layers):
-        x = block_tc(x, w, cfg, layer_idx)
+    x = cp.empty((Mp, D), dtype=cp.float32)  # residual stream
+    h16 = cp.empty((Mp, D), dtype=cp.float16)  # layernorm output = next GEMM's input
+    qkv16 = cp.empty((Mp, 3 * D), dtype=cp.float16)
+    # Attention only writes real rows; zero the padding rows so they stay finite.
+    att16 = (cp.zeros if Mp != M else cp.empty)((Mp, D), dtype=cp.float16)
+    ff16 = cp.empty((Mp, F), dtype=cp.float16)
+    logits = cp.empty((Mp, V), dtype=cp.float32)
 
-    x = layer_norm(x, w["ln_f.weight"], w["ln_f.bias"])
-    return linear_tc(x, w["head.weight"])
+    tokens = cp.ascontiguousarray(tokens_batch, dtype=cp.int64).reshape(-1)
+    _kernel("embed_layernorm")(
+        ((Mp + 3) // 4,), (128,),
+        (tokens, w["tok_emb.weight"], w["pos_emb"], w["blocks.0.ln1.weight"], w["blocks.0.ln1.bias"],
+         x, h16, np.int32(M), np.int32(Mp), np.int32(T), np.int32(D), np.float32(LN_EPS)),
+    )
+
+    for i in range(cfg.n_layers):
+        p = f"blocks.{i}"
+        if i > 0:
+            layer_norm(x, w[f"{p}.ln1.weight"], w[f"{p}.ln1.bias"], h16)
+        linear_tc(h16, w[f"{p}.attn.qkv.weight"], qkv16, EPI_STORE_F16)
+        attention(qkv16, att16, B, cfg)
+        linear_tc(att16, w[f"{p}.attn.proj.weight"], x, EPI_RESIDUAL_ADD_F32)  # x += attn(...)
+
+        layer_norm(x, w[f"{p}.ln2.weight"], w[f"{p}.ln2.bias"], h16)
+        linear_tc(h16, w[f"{p}.mlp.0.weight"], ff16, EPI_BIAS_GELU_F16, w[f"{p}.mlp.0.bias"])
+        linear_tc(ff16, w[f"{p}.mlp.2.weight"], x, EPI_RESIDUAL_ADD_F32, w[f"{p}.mlp.2.bias"])  # x += mlp(...)
+
+    layer_norm(x, w["ln_f.weight"], w["ln_f.bias"], h16)
+    linear_tc(h16, w["head.weight"], logits, EPI_STORE_F32)
+    return logits[:M].reshape(B, T, V)
 
 
 def run_multistream_sampling_loop(
@@ -192,11 +174,14 @@ def run_multistream_sampling_loop(
 
 
 def upload_weights(weights_np: dict) -> dict:
-    return {k: cp.asarray(v) for k, v in weights_np.items()}
+    """Linear-layer weights as fp16 (tensor-core GEMM inputs, PyTorch (out, in)
+    layout); embeddings, biases and layernorm parameters as fp32."""
+    return {k: cp.asarray(v, dtype=cp.float16 if k.endswith(LINEAR_WEIGHTS) else cp.float32)
+            for k, v in weights_np.items()}
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Stage 4 tensor-core + multi-stream GQE policy forward pass.")
+    ap = argparse.ArgumentParser(description="Stage 4 fused tensor-core + multi-stream GQE policy forward pass.")
     add_gqe_args(ap)
     ap.add_argument("--n-streams", type=int, default=1,
                      help="If >1, run this many independent sampling batches concurrently on separate streams.")
@@ -219,7 +204,7 @@ def main():
         cp.cuda.Stream.null.synchronize()
         t1 = time.perf_counter()
 
-        print(f"[stage4_tc] GQE policy_forward (tensor-core): batch={args.batch_size} "
+        print(f"[stage4_tc] GQE policy_forward (fused tensor-core): batch={args.batch_size} "
               f"seq_len={cfg.seq_len} d_model={cfg.d_model} n_layers={cfg.n_layers}")
         print(f"[stage4_tc] logits shape = {logits.shape}")
         print(f"[stage4_tc] wall time = {(t1 - t0) * 1e3:.3f} ms")

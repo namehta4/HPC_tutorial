@@ -54,9 +54,9 @@ def test_vqe_batched_full_qubit_range(n_qubits):
     np.testing.assert_allclose(actual, expected, atol=ENERGY_TOL)
 
 
-@pytest.mark.parametrize("batch_size", [1, 4, 8])
-def test_gqe_policy_forward_tensorcore_matches_pytorch(batch_size):
-    cfg = GQEConfig()
+@pytest.mark.parametrize("batch_size,d_model", [(1, 32), (4, 32), (8, 32), (16, 128)])
+def test_gqe_policy_forward_tensorcore_matches_pytorch(batch_size, d_model):
+    cfg = GQEConfig(d_model=d_model)
     model = deterministic_weights(cfg, seed=0)
     weights_np = export_weights_numpy(model)
     weights_gpu = upload_weights(weights_np)
@@ -71,7 +71,7 @@ def test_gqe_policy_forward_tensorcore_matches_pytorch(batch_size):
     actual = cp.asnumpy(policy_forward_tc(tokens_gpu, weights_gpu, cfg))
 
     max_abs_diff = np.max(np.abs(actual - expected))
-    assert max_abs_diff < LOGITS_TOL, f"batch={batch_size}: max abs diff {max_abs_diff}"
+    assert max_abs_diff < LOGITS_TOL, f"batch={batch_size} d_model={d_model}: max abs diff {max_abs_diff}"
 
 
 def test_gqe_multistream_produces_correct_shapes_and_values():

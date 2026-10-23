@@ -7,12 +7,14 @@ memory-traffic optimization independent of the VQE kernel work:
 
   - fp32 weights/activations (CuPy default for this network) halve memory
     traffic vs. a hypothetical fp64 transformer.
-  - fp16 weights/activations halve it again vs. fp32. Note that storing
-    operands in fp16 does NOT by itself put the matmuls on tensor cores:
-    for these skinny shapes cuBLAS picks a CUDA-core kernel
-    (gemmSN_NN_kernel<float>), and ncu shows zero tensor-core FLOPs for
-    this stage (README §10). Stage 4's hand-written WMMA kernel is what
-    actually reaches the tensor cores.
+  - fp16 weights/activations halve it again vs. fp32, and let cuBLAS run
+    the linear layers on tensor cores (fp16 multiply, fp32 accumulate) --
+    but only because each layer is issued as ONE 2D GEMM (linear_fp16
+    below). The obvious `x @ W.T` on a 3D (B, T, D) activation makes CuPy
+    issue a batch of B tiny (T x D) GEMMs, which cuBLAS runs as a
+    CUDA-core gemv kernel (gemmSN_NN_kernel): fp16 storage alone does not
+    reach the tensor cores. ncu's sm__ops_path_tensor_* counters show the
+    difference.
 
 The policy network here is intentionally small (d_model=32 by default), so
 at THIS size compute throughput barely matters -- the
@@ -45,6 +47,16 @@ from common.config import add_gqe_args
 from common.gqe_policy_ref import GQEConfig, deterministic_weights, export_weights_numpy, sample_tokens
 
 
+def linear_fp16(x: cp.ndarray, weight: cp.ndarray) -> cp.ndarray:
+    """x (..., D_in) fp16 @ weight.T -> (..., D_out) fp16, as one 2D GEMM.
+
+    Flattening the leading dims is what puts this on tensor cores: a 3D
+    `x @ weight.T` becomes a batched GEMM of tiny (seq_len x D_in) matrices,
+    which cuBLAS runs on CUDA cores (see module docstring)."""
+    lead = x.shape[:-1]
+    return (x.reshape(-1, x.shape[-1]) @ weight.T).reshape(*lead, weight.shape[0])
+
+
 def layer_norm_fp16(x: cp.ndarray, weight: cp.ndarray, bias: cp.ndarray, eps: float = 1e-5) -> cp.ndarray:
     """x is fp16; accumulate mean/var in fp32 for numerical stability, cast back to fp16."""
     x32 = x.astype(cp.float32)
@@ -65,7 +77,7 @@ def attention_fp16(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp
     H, Dh = cfg.n_heads, D // cfg.n_heads
     prefix = f"blocks.{layer_idx}.attn"
 
-    qkv = x @ w[f"{prefix}.qkv.weight"].T  # fp16 operands; cuBLAS still runs this on CUDA cores (see module docstring)
+    qkv = linear_fp16(x, w[f"{prefix}.qkv.weight"])  # one 2D fp16 GEMM -> tensor cores
     qkv = qkv.reshape(B, T, 3, H, Dh)
     q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
     q, k, v = (cp.transpose(t, (0, 2, 1, 3)) for t in (q, k, v))
@@ -81,7 +93,7 @@ def attention_fp16(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp
 
     out = cp.matmul(attn, v)
     out = cp.transpose(out, (0, 2, 1, 3)).reshape(B, T, D)
-    return out @ w[f"{prefix}.proj.weight"].T
+    return linear_fp16(out, w[f"{prefix}.proj.weight"])
 
 
 def block_fp16(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp.ndarray:
@@ -90,9 +102,9 @@ def block_fp16(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp.nda
     x = x + attention_fp16(ln1, w, cfg, layer_idx)
 
     ln2 = layer_norm_fp16(x, w[f"{prefix}.ln2.weight"], w[f"{prefix}.ln2.bias"])
-    h = ln2 @ w[f"{prefix}.mlp.0.weight"].T + w[f"{prefix}.mlp.0.bias"]
+    h = linear_fp16(ln2, w[f"{prefix}.mlp.0.weight"]) + w[f"{prefix}.mlp.0.bias"]
     h = gelu_fp16(h)
-    h = h @ w[f"{prefix}.mlp.2.weight"].T + w[f"{prefix}.mlp.2.bias"]
+    h = linear_fp16(h, w[f"{prefix}.mlp.2.weight"]) + w[f"{prefix}.mlp.2.bias"]
     return x + h
 
 

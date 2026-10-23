@@ -24,7 +24,7 @@ Stage progression (each stage's `NOTES.md` has the full diagnosis):
 | `stage1_naive` | — | legitimate naive CuPy port: one kernel + host sync per gate/op |
 | `stage2_gpu_native` | kernel-launch/sync overhead | fused gates, batched Hamiltonian terms, no syncs until the end, CUDA streams |
 | `stage3_memory_opt` | global memory traffic | hand-written CUDA kernels, whole-circuit-in-shared-memory, FP32/FP16 mixed precision |
-| `stage4_compute_opt` | occupancy / compute throughput | grid-batched statevectors (one block per circuit) for VQE; WMMA tensor-core GEMM + multi-stream for GQE |
+| `stage4_compute_opt` | occupancy / compute throughput | grid-batched statevectors (one block per circuit) for VQE; fused GQE forward pass (WMMA tensor-core GEMM with fused epilogues, fused layernorm/attention: 16 launches) + multi-stream |
 
 The overall arc plotted by `plot_hierarchical_roofline.py --compare` (reference
 copies in `reference_results/`): overhead-bound → memory-bound
@@ -110,7 +110,7 @@ match the ncu GUI. Keep it that way, and don't swap in `lts__t_bytes` /
 `l1tex__t_bytes`. If you add an ncu run to a `profile.sh`, list the report
 in that script's final `plot_hierarchical_roofline.py` call. Tensor FLOPs
 come from `sm__ops_path_tensor_*`, which already counts FLOPs (verified
-against 2·M·N·K for stage4's padded GQE GEMMs). In `--set roofline`
+against 2·M·N·K for the GQE GEMMs). In `--set roofline`
 exports, `derived__sm__*_pred_on_x2` columns are peak rates (the same for
 every kernel). The achieved rates are `derived__smsp__*` /
 `smsp__*.per_cycle_elapsed`. CUDA-core half-precision counts (the GUI's
@@ -249,8 +249,8 @@ apples-to-apples:
   matvec/term in stage1 → one batched CuPy op in stage2 → one shared-memory
   kernel reused across all terms in stage3/4).
 - `policy_forward` — GQE transformer forward pass (per-sample Python loop in
-  stage1 → batched GEMMs in stage2 → fp16 in stage3 → WMMA tensor-core GEMM
-  in stage4).
+  stage1 → batched GEMMs in stage2 → fp16 cuBLAS tensor-core GEMMs in
+  stage3 → fused WMMA tensor-core GEMM + layernorm/attention in stage4).
 
 **Stage 3/4 CUDA kernels** (`kernels/*.cu`) are compiled by each stage's
 `build.sh` into `.cubin` files (`nvcc -arch=sm_XX -cubin`, default
@@ -265,8 +265,10 @@ value — stage3's statevector kernels only ship fp64/fp32 variants (fp16
 statevector storage is numerically unusable for this tutorial's energy
 tolerances) and fall back with a printed note; `tf32` for the statevector
 kernels also falls back to fp32 since there's no tensor-core matmul in that
-code path to apply TF32 to. TF32/fp16 tensor-core paths only exist in
-stage4's GEMM-shaped GQE kernels. Each precision level has its own,
+code path to apply TF32 to. fp16 tensor-core paths only exist in the
+GEMM-shaped GQE linear layers: cuBLAS in stage3 (which requires issuing each
+layer as one 2D GEMM; see `linear_fp16`) and the hand-written WMMA kernel in
+stage4. Each precision level has its own,
 progressively looser correctness tolerance in that stage's
 `test_correctness.py` (documented per-stage in `NOTES.md`'s Correctness
 section) — don't tighten these without re-deriving them, they reflect real

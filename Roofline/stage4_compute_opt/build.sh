@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compile stage4's hand-written CUDA C++ kernels (batched VQE gate/expval
-# kernels + WMMA tensor-core GEMM) to .cubin files loadable by cupy.RawModule.
+# kernels + fused GQE kernels: WMMA tensor-core GEMM with epilogues, layernorm,
+# attention) to .cubin files loadable by cupy.RawModule.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

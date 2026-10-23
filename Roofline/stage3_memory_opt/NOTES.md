@@ -41,7 +41,10 @@ Stage 3 replaces both with hand-written CUDA C++ kernels
    `gqe_batched_fp16.py` does the same for the GQE policy network, at fp16
    (2 bytes per value), with softmax/layernorm accumulation kept in fp32
    for numerical stability — a standard practice for low-precision
-   transformers.
+   transformers. fp16 also lets cuBLAS run the linear layers on tensor
+   cores, but only because each layer is issued as one 2D GEMM over all
+   batch × seq_len rows (`linear_fp16`). The plain `x @ W.T` on a 3D
+   activation becomes a batch of tiny GEMMs that cuBLAS runs on CUDA cores.
 
 Net effect for a full VQE energy evaluation: statevector global-memory
 traffic drops from stage2's `O(n_gates + n_terms)` full passes to exactly
@@ -103,10 +106,10 @@ Open `profiles/stage3_vqe_fp64_roofline.ncu-rep` and
 - Kernels should now be measurably closer to the memory roofline than in
   any previous stage, though likely still short of actually touching it —
   achieving that last gap (register-level optimization, launch
-  configuration tuning, occupancy) is stage 4's job, along with asking
-  whether the GQE policy_forward kernel — which involves real GEMMs, unlike
-  the statevector kernels — could be moved toward the COMPUTE roofline
-  instead via tensor cores.
+  configuration tuning, occupancy) is stage 4's job. For GQE, the
+  linear-layer GEMMs now run on tensor cores, and the profile shows they're
+  only ~7% of the forward pass's GPU time. The rest is ~175 small
+  memory-bound elementwise, reduction and cast kernels.
 
 ## What change leads into Stage 4
 
@@ -114,10 +117,10 @@ At this point the statevector kernels are memory-traffic-efficient but
 still running on plain CUDA cores with a straightforward, unoptimized
 launch configuration (fixed thread count, no attempt to reason about
 occupancy or warp-level efficiency). Meanwhile the GQE policy_forward
-kernel is fundamentally GEMM-shaped (attention and MLP layers are
-matrix multiplies) and, at larger batch sizes, has enough arithmetic
-intensity to potentially become compute-bound rather than memory-bound —
-which means it's the right candidate for tensor-core acceleration. Stage 4
-addresses both: occupancy/launch-configuration tuning for the statevector
-kernels, and a tensor-core (WMMA) GEMM path plus multi-stream scaling for
-the GQE sampling loop.
+pass has its GEMMs on tensor cores, but most of its time goes to the
+memory-bound glue around them: bias adds, GELU, layernorm and softmax
+pieces, and fp16<->fp32 casts, each a separate kernel with its own round
+trip to HBM. Stage 4 addresses both: occupancy/launch-configuration tuning
+for the statevector kernels, and, for GQE, fusing that glue into a handful
+of kernels (a WMMA tensor-core GEMM with fused epilogues, fused layernorm,
+fused attention) plus multi-stream scaling for the sampling loop.

@@ -23,7 +23,7 @@ way they do — the tutorial doesn't re-teach that part.
 | 1 | `stage1_naive/` | — (baseline) | a legitimate, unoptimized CuPy port |
 | 2 | `stage2_gpu_native/` | kernel-launch & sync overhead | fuse gates, batch work, remove syncs, use streams |
 | 3 | `stage3_memory_opt/` | global memory traffic | hand-written CUDA kernels, shared memory, mixed precision |
-| 4 | `stage4_compute_opt/` | occupancy / compute throughput | batch across SMs, tensor cores for the GEMM-shaped GQE |
+| 4 | `stage4_compute_opt/` | occupancy / compute throughput | batch across SMs (VQE); fuse GQE's memory-bound glue around tensor-core GEMMs |
 
 Each stage's own `NOTES.md` explains, in depth, what's wrong with that
 stage's code, what you should see in the profiler, and what change gets you
@@ -468,8 +468,8 @@ worked example for the tensor-core transition in §8 below.
 |---|---|---|
 | 1 naive | Per-sample Python loop — each of the batch's samples gets its own small `(seq_len, d_model)` matmul, launched separately. Motif is **B independent small unbatched GEMMs**; 1088 total kernel instances measured for batch=8, the most extreme "many tiny launches" case in the tutorial | Same per-sample loop; QK^T and attn·V computed per sample |
 | 2 GPU-native | The whole `(B, T, D)` tensor multiplied at once via `@` — cuBLAS's native **batched/strided-GEMM** primitive. Motif becomes **one batched GEMM instead of B separate ones** | `cp.matmul` on 4D tensors `(B, H, T, T)` — same batched-GEMM primitive applied to attention's two contractions |
-| 3 memory-opt | Same batched GEMM, now at **fp16** — half the bytes moved per weight/activation load. Motif is unchanged; **precision is reduced** (fp32 kept for softmax/layernorm accumulation — standard practice for low-precision transformers) | Same, fp16 |
-| 4 compute-opt | Same GEMM shape, executed by a **hand-written WMMA tensor-core kernel** (`kernels/policy_forward_gemm.cu`) — each warp computes one 16x16 output tile via `wmma::mma_sync`, fp16-multiply/fp32-accumulate. Motif moves from "cuBLAS batched GEMM on CUDA cores" to "the same GEMM on tensor cores." Multiple independent sampling batches also now run on **separate CUDA streams concurrently** | Same tensor-core routing — attention's contractions go through the same GEMM kernel |
+| 3 memory-opt | Same GEMMs, now at **fp16**: half the bytes moved per weight/activation load, and each linear layer issued as **one 2D GEMM over all batch × seq_len rows** so cuBLAS runs it on **tensor cores** (fp16 multiply, fp32 accumulate). fp32 kept for softmax/layernorm accumulation, standard practice for low-precision transformers | Same, fp16 |
+| 4 compute-opt | The GEMMs were already on tensor cores, and now the **memory-bound glue around them is fused**: a hand-written WMMA tensor-core GEMM (`kernels/policy_forward_gemm.cu`) applies each layer's bias / GELU / residual add before writing its output, layernorm is one kernel, and a forward pass drops from ~190 kernel launches to 16. Multiple independent sampling batches also run on **separate CUDA streams concurrently** | One fused kernel per (batch, head): scores, mask, softmax and attn·V in shared memory, on CUDA cores (8x8 per head is too small for tensor cores) |
 
 ### The one-sentence summary, for both workloads
 
@@ -585,8 +585,11 @@ model is a quantum-circuit-sampling transformer or a production LLM:
    (this tutorial's stage4 approach) is worth it when you have an unusual
    fused-op shape a stock GEMM call won't express, not as a first step.
    This tutorial has its own example: stage3's GQE stores everything in
-   fp16, yet ncu shows zero tensor-core FLOPs, because cuBLAS picks a
-   CUDA-core kernel for those skinny shapes (§10). Measure; don't assume.
+   fp16, but `x @ W.T` on a 3D (batch, seq, d) activation still ran on CUDA
+   cores, because CuPy issued it as a batch of tiny GEMMs. Reshaping to one
+   2D GEMM over all batch × seq rows (`linear_fp16`) is what put it on
+   tensor cores, and ncu's `sm__ops_path_tensor_*` counters confirm it.
+   Measure; don't assume.
 3. **Only reduce precision where the tolerance budget allows it, and
    measure the actual error, don't assume it.** Stage3's fp16 GQE path
    keeps softmax/layernorm accumulation in fp32 specifically because
@@ -723,7 +726,7 @@ cd ../stage4_compute_opt
 CUDA_ARCH=sm_80 ./build.sh
 python3 -m pytest test_correctness.py -v
 python3 vqe_compute_opt.py --molecule h2          # batched across SMs (one block per statevector)
-python3 gqe_multistream.py --batch-size 32        # WMMA tensor-core GEMM + concurrent streams
+python3 gqe_multistream.py --batch-size 32        # fused WMMA tensor-core kernels + concurrent streams
 ```
 Talk through the one deliberate asymmetry: VQE does **not** use tensor
 cores here (a 2x2 gate wastes >99% of a 16x16x16 tile — see
@@ -769,9 +772,9 @@ arithmetic intensity in FLOP/byte; "HBM AI" uses DRAM bytes.
 | 1 — naive | `zgemm1x1_kernel_core`, 1 launch/gate: 19.7 GFLOP/s, HBM AI 1.2 | not captured¹ | 7.7 GFLOP/s |
 | 2 — fused (CuPy) | `zgemm1x1_kernel_core`, 33 launches: 19.6 GFLOP/s, HBM AI 1.2 | batched CuPy elementwise ops, e.g. `cupy_multiply`: 251 GFLOP/s, HBM AI 0.19 | 28.7 GFLOP/s |
 | 2 — cuStateVec | `deviceMatAppl*`: ~15 GFLOP/s, HBM AI 0.9 | `expectationPauliKernel`: 29 GFLOP/s, HBM AI 4.9 | 20.5 GFLOP/s |
-| 3 — shared mem, fp64 | `apply_ansatz_shared`, 1 launch: 16.0 GFLOP/s, HBM AI 28 | `expval_pauli_batched_shared`, 1 launch: 20.4 GFLOP/s, HBM AI 400 | 20.0 GFLOP/s |
-| 3 — shared mem, fp32 | 24.6 GFLOP/s, HBM AI 51 | 25.5 GFLOP/s, HBM AI 693 | 25.3 GFLOP/s |
-| 4 — batched grid | `apply_ansatz_batched`: 505 GFLOP/s, HBM AI 30 | `expval_pauli_batched_grid`: 657 GFLOP/s, HBM AI 490 | 641 GFLOP/s |
+| 3 — shared mem, fp64 | `apply_ansatz_shared`, 1 launch: 16.7 GFLOP/s, HBM AI 28 | `expval_pauli_batched_shared`, 1 launch: 20.6 GFLOP/s, HBM AI 399 | 20.2 GFLOP/s |
+| 3 — shared mem, fp32 | 25.4 GFLOP/s, HBM AI 51 | 25.4 GFLOP/s, HBM AI 693 | 25.4 GFLOP/s |
+| 4 — batched grid | `apply_ansatz_batched`: 503 GFLOP/s, HBM AI 30 | `expval_pauli_batched_grid`: 657 GFLOP/s, HBM AI 497 | 641 GFLOP/s |
 
 ¹ Stage 1's `profile.sh` captures only the first 60 kernel launches
 (`--launch-count 60`), which at 12 qubits are all gate applications.
@@ -794,18 +797,38 @@ How to read it:
 
 **GQE** (batch 256, d_model 128, 2 layers)
 
-| Stage | Dominant GEMM kernel(s) | Whole workload |
-|---|---|---|
-| 1 — naive | cuBLAS `gemmSN_TN_kernel<float>`, per-sample loop: 31–107 GFLOP/s | 6.8 GFLOP/s |
-| 2 — batched | cuBLAS `gemmSN_NN_kernel<float>`, batched: 2.1–4.8 TFLOP/s | 706 GFLOP/s |
-| 3 — "fp16" | cuBLAS `gemmSN_NN_kernel<float>`: 2.5–4.8 TFLOP/s, **no tensor-core FLOPs**² | 577 GFLOP/s |
-| 4 — WMMA tensor core | hand-written `batched_gemm_tc_fp16`: 12.1 TFLOP/s (5% of the FP16 tensor ceiling), HBM AI 73 | 5,912 GFLOP/s |
+| Stage | What runs | Kernel launches | GPU time | Whole workload |
+|---|---|---|---|---|
+| 1 — naive | cuBLAS `gemmSN_TN_kernel<float>`, per-sample loop: 31–107 GFLOP/s | thousands¹ | — ¹ | 6.8 GFLOP/s |
+| 2 — batched | cuBLAS `gemmSN_NN_kernel<float>`, batched: 2.1–4.8 TFLOP/s | 163 | 1,138 µs | 706 GFLOP/s |
+| 3 — fp16, tensor cores | cuBLAS tensor-core GEMM `sm80_xmma_gemm_f16f16…`: 14.3 TFLOP/s | 193 | 1,020 µs | 770 GFLOP/s |
+| 4 — fused | `gemm_tc_fp16_fused` (WMMA, fused epilogues): 4.8 TFLOP/s; plus fused layernorm and attention | **16** | **209 µs** | **3,436 GFLOP/s** |
 
-² For these skinny GEMM shapes cuBLAS picks a CUDA-core fp32 kernel even
-though the inputs are fp16, so stage 3's fp16 storage halves memory
-traffic but doesn't engage tensor cores. Only stage 4's hand-written WMMA
-kernel actually runs on tensor cores, which you can see from its nonzero
-`sm__ops_path_tensor_*` counters in ncu.
+How to read it:
+- **Stage 1→2 (103x):** a per-sample Python loop of tiny cuBLAS calls
+  becomes a few batched GEMMs. Same lesson as VQE's stage 1→2.
+- **Stage 3 (1.1x):** the linear layers move onto tensor cores (their
+  tensor-core FLOPs equal the useful work, 0.68 GFLOP), but the whole
+  forward pass barely speeds up. The profile shows why: those GEMMs are
+  only ~7% of the GPU time. The other ~90% is ~175 small memory-bound
+  kernels (bias adds, GELU, layernorm and softmax pieces, fp16<->fp32
+  casts).
+- **Stage 4 (4.5x in throughput, 4.9x in GPU time):** fusing that glue
+  into the GEMM epilogue, one layernorm kernel and one attention kernel
+  cuts 193 launches to 16 and removes most HBM round trips. The lesson,
+  general to transformers: once the GEMMs are fast, the memory-bound glue
+  around them dominates, so fuse it.
+
+The story slides' arrows are throughput (GFLOP/s) ratios. That's only a
+fair measure when every stage's counted FLOPs are useful work. An earlier
+stage4 multiplied each token row as its own 16-row-padded tile; it looked
+7.7x faster on the roofline while being 1.8x *slower* in GPU time, because
+15/16 of its tensor-core FLOPs were multiplications by zero. If a kernel's
+FLOPs exceed the work the algorithm needs, its roofline point overstates
+it.
+
+¹ Stage 1's ncu capture is limited to the first 60 launches
+(`--launch-count 60`), so its GPU time isn't comparable.
 
 ---
 
@@ -869,7 +892,7 @@ stage0_calibration/       Bandwidth + GEMM peak-FLOPs probes, RESULTS.md
 stage1_naive/             Naive CuPy baseline
 stage2_gpu_native/        Fused/batched/streamed CuPy + cuStateVec comparison
 stage3_memory_opt/        Hand-written CUDA kernels, shared memory, mixed precision
-stage4_compute_opt/       Batched/occupancy-tuned kernels, WMMA tensor-core GEMM
+stage4_compute_opt/       Batched/occupancy-tuned VQE kernels, fused WMMA tensor-core GQE kernels
 plot_hierarchical_roofline.py  L1/L2/HBM roofline plots (same numbers as the ncu GUI); run by every profile.sh
 reference_results/        Roofline plots + per-kernel tables from the A100/Perlmutter reference run (§10; files tagged _a100_pm)
 tools/                    run_roofline_analysis.sh (whole analysis in one go, for instructors),

@@ -438,7 +438,10 @@ def plot_story(path, title, groups: list[tuple[str, dict, int, int]], upto: int,
     """One slide of the --compare "story": every ceiling, but only HBM points,
     for stages 1..`upto`. groups = [(label, totals, stage, color index)].
     The newest stage is drawn solid and earlier ones faded; arrows join the
-    main path (first report of each stage) and are labeled with the speedup."""
+    main path (first report of each stage) and are labeled with the speedup
+    in throughput (GFLOP/s). That ratio is only fair when each stage's
+    counted FLOPs are useful work -- padded or redundant math inflates it
+    (see README §10)."""
     fig, ax = plt.subplots(figsize=FIGSIZE)
     plot_roofs(fig, ax, limits, mem_roofs, comp_roofs, LEVELS)
 

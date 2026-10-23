@@ -4,8 +4,9 @@ Roofline plots and per-kernel tables from this tutorial's reference run, so
 you can compare your own results (or show them in a live session without
 profiling first). README §10 walks through what they show.
 
-**How they were made:** NVIDIA A100-SXM4-40GB on a dedicated, idle
-Perlmutter node (2026-10-22). Every stage's `profile.sh` ran with
+**How they were made:** NVIDIA A100-SXM4-40GB on dedicated, idle
+Perlmutter nodes (2026-10-22; stages 3 and 4 re-profiled 2026-10-23 after
+the GQE tensor-core and fusion changes). Every stage's `profile.sh` ran with
 
 ```bash
 QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh
