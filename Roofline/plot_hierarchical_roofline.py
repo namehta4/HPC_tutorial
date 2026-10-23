@@ -155,6 +155,8 @@ KERNEL_COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
 ROOF_COLOR = "gray"
 FIGSIZE = (10.67, 6.6)
 MARKERSIZE = 12
+# Filled markers with a thin dark outline, so overlapping points stay distinguishable.
+MARKER_EDGE = dict(markeredgecolor="k", markeredgewidth=0.8)
 MAXCHAR = 32
 
 
@@ -366,28 +368,28 @@ def _title(ax, text):
 
 def _level_legend(ax, levels):
     handles = [ax.plot([], [], c="k", marker=LEVEL_MARKERS[lv], linestyle="None", ms=10,
-                       markerfacecolor="none", markeredgewidth=2, label=lv)[0] for lv in levels]
+                       markerfacecolor="gray", **MARKER_EDGE, label=lv)[0] for lv in levels]
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, 0.93), ncol=len(levels),
               fontsize=11, frameon=False)
 
 
 def plot_kernels(path, title, kernels: list[tuple[str, dict]], levels, mem_roofs, comp_roofs):
-    """One color per kernel; one marker per memory level (filled circles for single-level plots)."""
+    """One color per kernel; one marker per memory level (circles for single-level plots)."""
     pts = [(k["AI " + lv], k["gflops"]) for _, k in kernels for lv in levels]
     fig, ax = plt.subplots(figsize=FIGSIZE)
     plot_roofs(fig, ax, _axis_limits(pts, comp_roofs), mem_roofs, comp_roofs, levels)
 
-    filled = len(levels) == 1
+    single_level = len(levels) == 1
     for i, (label, k) in enumerate(kernels):
         c = KERNEL_COLORS[i % len(KERNEL_COLORS)]
         for lv in levels:
-            ax.plot(k["AI " + lv], k["gflops"], c=c, marker="o" if filled else LEVEL_MARKERS[lv], linestyle="None",
-                    ms=MARKERSIZE, markerfacecolor=c if filled else "none", markeredgewidth=2)
+            ax.plot(k["AI " + lv], k["gflops"], c=c, marker="o" if single_level else LEVEL_MARKERS[lv], linestyle="None",
+                    ms=MARKERSIZE, **MARKER_EDGE)
 
     kernel_handles = [mpatches.Patch(color=KERNEL_COLORS[i % len(KERNEL_COLORS)], label=label)
                       for i, (label, _) in enumerate(kernels)]
     leg = ax.legend(handles=kernel_handles, loc="lower right", fontsize=9, frameon=False)
-    if not filled:
+    if not single_level:
         ax.add_artist(leg)
         _level_legend(ax, levels)
     _title(ax, title)
@@ -405,7 +407,7 @@ def plot_overview(path, title, groups: list[tuple[str, dict]], levels, mem_roofs
     if len(groups) == 1:
         g = groups[0][1]
         for lv in levels:
-            ax.plot(g["AI " + lv], g["gflops"], c=LEVEL_COLORS[lv], marker="o", ms=15, linestyle="None")
+            ax.plot(g["AI " + lv], g["gflops"], c=LEVEL_COLORS[lv], marker="o", ms=15, linestyle="None", **MARKER_EDGE)
         ax.legend(handles=[mpatches.Patch(color=LEVEL_COLORS[lv], label=lv) for lv in levels],
                   loc="lower right", frameon=False)
     else:
@@ -414,7 +416,7 @@ def plot_overview(path, title, groups: list[tuple[str, dict]], levels, mem_roofs
             for lv in levels:
                 if g["AI " + lv] > 0:
                     ax.plot(g["AI " + lv], g["gflops"], c=c, marker=LEVEL_MARKERS[lv], linestyle="None",
-                            ms=MARKERSIZE, markerfacecolor="none", markeredgewidth=2)
+                            ms=MARKERSIZE, **MARKER_EDGE)
         leg = ax.legend(handles=[mpatches.Patch(color=KERNEL_COLORS[i % len(KERNEL_COLORS)], label=label)
                                  for i, (label, _) in enumerate(groups)],
                         loc="lower right", fontsize=11, frameon=False)
