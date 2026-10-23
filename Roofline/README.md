@@ -36,6 +36,56 @@ running anything; it's written so you don't need outside context.
 
 ---
 
+## Quick start: the per-stage loop
+
+Once your environment is set up (§2 Perlmutter / §3 elsewhere) and you're
+on a **dedicated, idle GPU** (§5), the whole tutorial is the same loop
+repeated per stage:
+
+```bash
+# Stage 0, once: measure this GPU's real bandwidth / FLOP-s ceilings
+cd stage0_calibration && ./run_calibration.sh && cd ..
+
+# Stages 1-4: stage1_naive, stage2_gpu_native, stage3_memory_opt, stage4_compute_opt
+cd stage1_naive
+./build.sh                                                  # stage3/4 only; CUDA_ARCH=sm_XX ./build.sh if not an A100
+python3 -m pytest test_correctness.py -v                    # correctness first
+python3 vqe_naive.py --molecule random --qubits 12 --depth 3   # run it directly (script names per stage: §6)
+QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh  # nsys timeline + ncu reports + roofline plots
+cd ..
+```
+
+After each stage's `profile.sh`, look at:
+
+- `profiles/*_timeline.nsys-rep` (Nsight Systems): launch gaps and host
+  syncs, i.e. the overhead story.
+- `profiles/roofline_plots/<report>_all.png`: each kernel at L1 (o), L2 (s)
+  and HBM (v). The gap between a kernel's three points shows which memory
+  level serves it. `<report>_overview.png` is the whole workload as one
+  point per level. The table printed at the end of `profile.sh` (also
+  `<report>_kernels.csv`) has the numbers.
+- `profiles/*.ncu-rep` in the Nsight Compute GUI (optional): its
+  hierarchical roofline charts show the same numbers as the PNGs.
+- That stage's `NOTES.md`: the diagnosis, and the fix the next stage applies.
+
+The repo-root `roofline_hierarchical_vqe.png` / `roofline_hierarchical_gqe.png`
+are refreshed after every stage with one point triplet per completed stage,
+so the overhead-bound → memory-bound → compute-bound progression builds up
+as you go.
+
+Two things to know:
+- **Each `profile.sh` takes several minutes**, because ncu replays every
+  kernel many times. In the 45-minute live format (§9), run the scripts
+  directly and look at pre-generated plots; run `profile.sh` afterwards.
+- **Use the `QUBITS=12 ...` sizes.** At the default H2 size, every stage's
+  points land in the same corner of the plot (see the note at the top of §6).
+
+Instructors can regenerate everything (calibration, all four stages, tests,
+plots, and a check that the PNGs match the ncu GUI) in one go with
+`tools/run_roofline_analysis.sh`.
+
+---
+
 ## 1. What you need before you start
 
 - **An NVIDIA GPU** you can get exclusive/dedicated access to (shared,
@@ -181,19 +231,15 @@ Before trusting any timing, profiling, or roofline number:
 Work through these in order — each stage's `NOTES.md` assumes you've
 already read the previous one's.
 
-**A note on problem size before you start:** the commands below default to
-`--molecule h2` (4 qubits) for VQE and small batch/`d-model` for GQE — that's
-the right size for a *quick correctness check* (fast to run, easy to
-eyeball), but it is **too small to produce a visually convincing roofline
-plot**. At H2/depth-3 scale, stage1/2/3/4's VQE kernels move only a few KB
-of data each, so even stage4's occupancy-tuned kernels land in
-approximately the same bottom-left corner of the chart as stage1's —
-correct, but not compelling. To see the actual overhead → memory → compute
-progression on the chart (§10 below), re-run stage1/2/3/4's VQE commands
-with `--molecule random --qubits 12` once you've confirmed correctness at
-the default size, and re-run GQE with a larger `--batch-size`/`--d-model`
-(e.g. `--batch-size 256 --d-model 128`) for stage4's tensor-core kernel to
-do meaningfully more work per launch.
+**Problem size.** The direct-run commands below use `--molecule h2`
+(4 qubits): fast, and right for a quick correctness check. For profiling,
+use the larger sizes via `profile.sh`'s environment variables
+(`QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256`). At H2 scale every
+stage's kernels move only a few KB, so all stages land in the same corner
+of the roofline chart. At 12 qubits (a 64 KB statevector, the tutorial's
+cap) the overhead → memory → compute progression is clearly visible. The
+12-qubit Hamiltonian is a synthetic, molecule-like Pauli sum
+(`common/hamiltonians.py: random_pauli_hamiltonian`), not a real molecule.
 
 ### Stage 0 — Calibrate this GPU's real ceilings
 
@@ -204,39 +250,30 @@ cd stage0_calibration
 ./run_calibration.sh
 ```
 
-This measures achieved memory bandwidth (STREAM-style Triad) and achieved
-GEMM FLOP/s (FP64, TF32, FP16) on *your actual GPU*, and writes
-`bandwidth_fp64.json` / `gemm_peak.json`. Copy the printed numbers into the
-table at the bottom of `stage0_calibration/RESULTS.md` — every later
-roofline plot uses these as its ceilings, not vendor spec sheets.
+This measures achieved memory bandwidth (a fused STREAM Triad kernel) and
+achieved cuBLAS GEMM FLOP/s (FP64, TF32, FP16) on *your actual GPU*, and
+writes `bandwidth_fp64.json` / `gemm_peak.json`. Copy the numbers into
+`stage0_calibration/RESULTS.md`. The roofline plots draw ncu's theoretical
+ceilings, plus this measured HBM bandwidth as a dashed line, so you can
+see how much of the theoretical peak is actually achievable.
 
-**Sanity-check your FP32/TF32 number before trusting it.** On at least one
-CuPy/cuBLAS build we measured, the cuBLAS handle CuPy uses does *not*
-default to `CUBLAS_TENSOR_OP_MATH` for FP32 inputs despite cuBLAS's own
-docs suggesting Ampere+ does this automatically — `gemm_peak_probe.py`
-now sets this explicitly, but if you're on an older checkout or a
-different CuPy version and your measured FP32/TF32 number comes back close
-to your FP64 number (instead of ~8x higher), your GPU almost certainly
-supports TF32 tensor cores and the math mode just isn't being requested —
-see `stage0_calibration/RESULTS.md`'s "TF32 anomaly" note for the fix.
+If your FP32/TF32 number comes back close to your FP64 number instead of
+~8x higher, cuBLAS isn't using TF32 tensor cores; `gemm_peak_probe.py`
+requests them explicitly, so check you're on the current version.
 
 ### Stage 1 — Naive baseline
 
 ```bash
 cd stage1_naive
-python3 -m pytest test_correctness.py -v      # correctness first
-python3 vqe_naive.py --molecule h2 --depth 3   # run it directly
+python3 -m pytest test_correctness.py -v                            # correctness first
+python3 vqe_naive.py --molecule h2 --depth 3                        # run it directly
 python3 gqe_naive.py --batch-size 8
-./profile.sh                                    # nsys + ncu -> profiles/
-
-# Larger size -- needed for a visible point on the roofline overlay (see §6 note above)
-python3 vqe_naive.py --molecule random --qubits 12 --depth 3
-python3 gqe_naive.py --batch-size 64 --d-model 128
+QUBITS=12 D_MODEL=128 BATCH=256 ./profile.sh                        # nsys + ncu + roofline plots -> profiles/
 ```
 
-Read `stage1_naive/NOTES.md` afterward — it explains exactly what the
-Nsight Systems timeline and Nsight Compute roofline report should look like
-for this stage, and why.
+Read `stage1_naive/NOTES.md` afterward. It explains what the Nsight
+Systems timeline and the roofline plots should look like for this stage,
+and why.
 
 ### Stage 2 — GPU-native restructuring
 
@@ -246,10 +283,7 @@ python3 -m pytest test_correctness.py -v
 python3 vqe_fused.py --molecule h2 --depth 3
 python3 vqe_custatevec.py --molecule h2 --depth 3   # library comparison point
 python3 gqe_batched.py --batch-size 32
-./profile.sh
-
-# Larger size
-python3 vqe_fused.py --molecule random --qubits 12 --depth 3
+QUBITS=12 D_MODEL=128 BATCH=256 ./profile.sh
 ```
 
 ### Stage 3 — Memory-traffic reduction (compile CUDA kernels first)
@@ -262,10 +296,10 @@ cd stage3_memory_opt
 CUDA_ARCH=sm_80 ./build.sh    # match sm_80 to YOUR GPU -- see §3 step 4
 python3 -m pytest test_correctness.py -v
 python3 vqe_memopt.py --molecule h2 --precision fp32
-./profile.sh
+QUBITS=12 D_MODEL=128 BATCH=256 ./profile.sh
 ```
 
-If you edit any `kernels/*.cu` file, re-run `./build.sh` — nothing does
+If you edit any `kernels/*.cu` file, re-run `./build.sh`; nothing does
 this for you automatically.
 
 ### Stage 4 — Compute-bound tuning
@@ -276,76 +310,45 @@ CUDA_ARCH=sm_80 ./build.sh    # same note as stage3
 python3 -m pytest test_correctness.py -v
 python3 vqe_compute_opt.py --molecule h2
 python3 gqe_multistream.py --batch-size 32
-./profile.sh
-
-# Larger size -- this is the pair of runs that actually shows separation
-# from stage1/2 on the roofline overlay
-python3 vqe_compute_opt.py --molecule random --qubits 12 --depth 3 --batch-size 32
-python3 gqe_multistream.py --batch-size 256 --d-model 128
+QUBITS=12 D_MODEL=128 GQE_BATCH=256 ./profile.sh
 ```
 
-### Putting it all together: the overlay roofline plot
+### The roofline plots
 
-Once you've run each stage's `profile.sh` and have `.ncu-rep` files in each
-stage's `profiles/` directory, export them to CSV and overlay them on one
-chart. **Use the `--qubits 12` runs from §6 above for this, not the
-default H2 ones** — see the size note at the top of §6 for why: at H2
-scale every stage's VQE kernel lands in the same corner of the chart and
-the plot doesn't show the progression it's meant to.
+Every stage's `profile.sh` ends by running `plot_hierarchical_roofline.py`
+on the reports it just wrote:
+
+- `profiles/roofline_plots/<report>_all.png`: each kernel (top 8 by GPU
+  time) plotted at L1 (o), L2 (s) and HBM (v). All three share the same
+  GFLOP/s; the horizontal gap between them shows which memory level serves
+  the kernel's traffic.
+- `profiles/roofline_plots/<report>_{hbm,l2,l1}.png`: one memory level per plot.
+- `profiles/roofline_plots/<report>_overview.png`: the whole workload as
+  one point per level.
+- `profiles/roofline_plots/<report>_kernels.csv`: the numbers behind the plots.
+- `roofline_hierarchical_vqe.png` / `roofline_hierarchical_gqe.png` at the
+  repo root: one point triplet per stage profiled so far, i.e. the
+  tutorial's stage-by-stage progression. Reference copies from a
+  dedicated A100 run are in `reference_results/` (§10).
+
+The points and ceilings use the same `--set roofline` metrics and formulas
+as the Nsight Compute GUI's "Hierarchical Roofline" charts, so they match
+what you'd see in the GUI. Ceilings are ncu's theoretical peaks at the
+clocks ncu locks during profiling (~1.1 GHz on A100, below boost). There
+are two deliberate differences from the GUI. First, a kernel's double,
+single and tensor-core FLOPs are summed into one point, and repeated
+launches of the same kernel are combined (total FLOPs / total time); the
+GUI draws one chart per precision and one point per launch. Second, the
+GUI's CUDA-core half-precision chart is left out: in this tutorial it only
+counts compiler register moves (see the `plot_hierarchical_roofline.py`
+docstring), not arithmetic.
+
+To re-plot existing reports by hand (works without a GPU):
 
 ```bash
-# Profile the larger-size VQE run directly with ncu (profile.sh's default
-# invocation targets H2; pause DCGM first the same way profile.sh does,
-# or reuse profile.sh's MOLECULE/DEPTH env-var overrides if your stage
-# script's args allow it):
-dcgmi profile --pause   # skip if dcgmi isn't installed -- see §11
-ncu --set roofline --export stage1_naive/profiles/stage1_vqe_q12_roofline --force-overwrite \
-    python3 stage1_naive/vqe_naive.py --molecule random --qubits 12 --depth 3
-ncu --set roofline --export stage2_gpu_native/profiles/stage2_vqe_q12_roofline --force-overwrite \
-    python3 stage2_gpu_native/vqe_fused.py --molecule random --qubits 12 --depth 3
-ncu --set roofline --export stage4_compute_opt/profiles/stage4_vqe_q12_roofline --force-overwrite \
-    python3 stage4_compute_opt/vqe_compute_opt.py --molecule random --qubits 12 --depth 3 --batch-size 32
-dcgmi profile --resume
-
-# Export each stage's ncu report to CSV
-ncu --import stage1_naive/profiles/stage1_vqe_q12_roofline.ncu-rep --csv --page raw > stage1_naive/profiles/stage1_vqe_q12_roofline.csv
-ncu --import stage2_gpu_native/profiles/stage2_vqe_q12_roofline.ncu-rep --csv --page raw > stage2_gpu_native/profiles/stage2_vqe_q12_roofline.csv
-ncu --import stage3_memory_opt/profiles/stage3_vqe_fp64_roofline.ncu-rep --csv --page raw > stage3_memory_opt/profiles/stage3_vqe_fp64_roofline.csv
-ncu --import stage3_memory_opt/profiles/stage3_vqe_fp32_roofline.ncu-rep --csv --page raw > stage3_memory_opt/profiles/stage3_vqe_fp32_roofline.csv
-ncu --import stage4_compute_opt/profiles/stage4_vqe_q12_roofline.ncu-rep --csv --page raw > stage4_compute_opt/profiles/stage4_vqe_q12_roofline.csv
-
-# Overlay all four stages on one chart (peak values are TFLOP/s -- these are
-# this tutorial's own measured A100-SXM4-40GB numbers from
-# stage0_calibration/RESULTS.md; substitute YOUR stage0 numbers instead,
-# not these)
-python3 plot_roofline.py --peak-bw 589.5 --peak-flops-fp64 18.64 \
-    --peak-flops-fp32 155.58 --peak-flops-fp16 278.01 \
-    --csv stage1_naive/profiles/stage1_vqe_q12_roofline.csv \
-    --csv stage2_gpu_native/profiles/stage2_vqe_q12_roofline.csv \
-    --csv stage3_memory_opt/profiles/stage3_vqe_fp64_roofline.csv \
-    --csv stage3_memory_opt/profiles/stage3_vqe_fp32_roofline.csv \
-    --csv stage4_compute_opt/profiles/stage4_vqe_q12_roofline.csv \
-    --out roofline_overlay.png
+python3 plot_hierarchical_roofline.py stage1_naive/profiles/stage1_vqe_roofline.ncu-rep
+python3 plot_hierarchical_roofline.py --compare vqe --compare gqe
 ```
-
-Substitute the `--peak-*` values with what *you* measured in stage0, not
-the numbers above (which are only valid for the specific A100 this
-tutorial was profiled on). At `--qubits 12`, the resulting
-`roofline_overlay.png` shows stage1/2 staying flat around 5-10 GFLOP/s
-(still overhead-bound regardless of problem size, as expected) while
-stage3 reaches roughly 2-160 GFLOP/s and stage4 reaches roughly
-4,700-6,700 GFLOP/s at much higher arithmetic intensity — real,
-qualitative movement up and to the right, unlike the default H2-size plot.
-
-**GQE's tensor-core kernel currently can't be plotted this way.**
-`plot_roofline.py`'s automatic CSV parsing only recognizes FP64/FP32 FMA
-instruction counters (see the module docstring), so it silently skips
-stage4's fp16 `batched_gemm_tc_fp16` WMMA kernel — you can confirm it ran
-and used tensor cores via `ncu`'s
-`sm__pipe_tensor_cycles_active.sum.pct_of_peak_sustained_elapsed` metric on
-that kernel, but getting a correct point for it onto this chart requires
-`--manual-points` with a hand-computed (arithmetic intensity, GFLOP/s)
-pair for the kernel's actual (padded) tile dimensions — not yet automated.
 
 ---
 
@@ -515,6 +518,9 @@ model is a quantum-circuit-sampling transformer or a production LLM:
    `policy_forward_gemm.cu` does for teaching purposes. Hand-written WMMA
    (this tutorial's stage4 approach) is worth it when you have an unusual
    fused-op shape a stock GEMM call won't express, not as a first step.
+   This tutorial has its own example: stage3's GQE stores everything in
+   fp16, yet ncu shows zero tensor-core FLOPs, because cuBLAS picks a
+   CUDA-core kernel for those skinny shapes (§10). Measure; don't assume.
 3. **Only reduce precision where the tolerance budget allows it, and
    measure the actual error, don't assume it.** Stage3's fp16 GQE path
    keeps softmax/layernorm accumulation in fp32 specifically because
@@ -663,62 +669,74 @@ That's a "know when *not* to reach for a tool" moment, not an oversight.
 
 - Line up the wall times you saw printed across all four `vqe_*.py` runs —
   no profiling needed for this comparison, you already have the numbers.
-- If you (or the facilitator) pre-generated `roofline_overlay.png` (§6's
-  "Putting it all together" section, run ahead of time since each
-  `profile.sh` takes several minutes), show it now — the kernel-count story
-  you just watched live is the same story that chart tells visually.
-- Take-home: run each stage's full `./profile.sh` (nsys timeline + ncu
-  roofline) on your own allocation, then §6's CSV-export + `plot_roofline.py`
-  steps, to generate your own roofline chart from your own GPU's numbers.
+- Show `reference_results/roofline_hierarchical_vqe.png` and
+  `roofline_hierarchical_gqe.png` (§10): the kernel-count story you just
+  watched live is the same story those charts tell visually.
+- Take-home: run each stage's full `QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh`
+  (nsys timeline + ncu roofline + plots) on your own allocation. This
+  generates your own roofline charts from your own GPU's numbers in
+  `profiles/roofline_plots/` and the repo-root `roofline_hierarchical_*.png`
+  (see "Quick start" at the top).
 
 ---
 
 ## 10. Expected results
 
-The table below is filled in with *actual measured* results from this
-tutorial's own reference run (A100-SXM4-40GB, dedicated Perlmutter
-allocation, VQE at `--molecule random --qubits 12 --depth 3`,
-`stage0_calibration/RESULTS.md`'s 2026-09-23 numbers) — replace it with
-*your own* measurements once you've run your profiler on your GPU, since
-absolute GFLOP/s and % of roofline are hardware-specific. Arithmetic
-intensity (AI) is FLOPs moved per byte of DRAM traffic; the ridge point
-(FP64: ~31.6 FLOP/byte, FP32/TF32: ~264 FLOP/byte, on this reference GPU)
-is the AI where a kernel crosses from memory-bound to compute-bound.
+`reference_results/` holds the roofline plots and per-kernel tables from
+this tutorial's reference run: an A100-SXM4-40GB on a dedicated Perlmutter
+node, every stage's `profile.sh` run with `QUBITS=12 D_MODEL=128 BATCH=256
+GQE_BATCH=256`. Absolute numbers are hardware-specific, so compare the
+*shape* of your results with these, not the digits.
 
-| Stage | Kernel(s) tracked | Arithmetic Intensity (FLOP/byte) | Achieved GFLOP/s | % of FP64 roofline (18,640 GFLOP/s) |
-|---|---|---|---|---|
-| 1 — naive | `gate_apply` (`zgemm1x1_kernel_core`) | ~0.28 | ~4.6 | ~0.02% |
-| 2 — GPU-native | `gate_apply` (fused, `zgemm1x1_kernel_core`) | n/a¹ | ~4.6 | ~0.02% |
-| 3 — memory opt (fp64) | `gate_apply` (`apply_ansatz_shared`), `expval_reduce` (`expval_pauli_batched_shared`) | ~2.5-2.8 | ~1.3-1.7 | ~0.01% |
-| 3 — memory opt (fp32) | same, fp32 | ~2.4-3.1 | ~1.2-2.0 | ~0.01% |
-| 4 — compute opt | `gate_apply` (`apply_ansatz_batched`), `expval_reduce` (`expval_pauli_batched_grid`) | ~9.5 | ~12.5-158.7 | ~0.07-0.85% |
+Ceilings under ncu (clocks locked at ~1.1 GHz): HBM ≈1,535 GB/s, L2
+≈5,300 GB/s, L1 ≈14,900 GB/s, FP64 FMA ≈7.5 TFLOP/s, FP16 tensor
+≈238 TFLOP/s. stage0's measured HBM bandwidth was 1,362 GB/s. AI is
+arithmetic intensity in FLOP/byte; "HBM AI" uses DRAM bytes.
 
-¹ Stage1 and stage2's `gate_apply` kernel moves so little DRAM traffic per
-launch (a handful of KB) that the AI ratio is dominated by measurement
-noise rather than anything meaningful — don't read too much into small AI
-differences between stage1 and stage2 specifically; the GFLOP/s column and
-kernel-launch-count story (§7, each stage's `NOTES.md`) are the more
-reliable signal for these two stages, not roofline position.
+**VQE** (12 qubits, random 576-term Hamiltonian, depth 3)
 
-**What this table actually shows:** even at `--qubits 12`, every VQE
-kernel in this tutorial stays well under 1% of the FP64 roofline — that's
-expected and correct, not a bug. Statevector sizes here (up to 4096 complex
-values) are simply too small for this class of kernel to approach a
-modern GPU's compute ceiling; the meaningful comparison is the ~7-90x
-GFLOP/s improvement from stage1/2 to stage4 (not the absolute % of
-roofline), plus the *kernel-launch-count* collapse (33+ launches in stage1
-down to 2 in stage3/4) that the roofline chart alone doesn't capture. See
-`roofline_overlay.png` (or `roofline_overlay_q12.png` if you're comparing
-against this tutorial's own reference run) for the visual version of this
-table, and each stage's `NOTES.md` "What the Nsight Compute roofline plot
-is expected to show" section for the qualitative walkthrough.
+| Stage | `gate_apply` | `expval_reduce` | Whole workload |
+|---|---|---|---|
+| 1 — naive | `zgemm1x1_kernel_core`, 1 launch/gate: 19.7 GFLOP/s, HBM AI 1.2 | not captured¹ | 7.7 GFLOP/s |
+| 2 — fused (CuPy) | `zgemm1x1_kernel_core`, 33 launches: 19.6 GFLOP/s, HBM AI 1.2 | batched CuPy elementwise ops, e.g. `cupy_multiply`: 251 GFLOP/s, HBM AI 0.19 | 28.7 GFLOP/s |
+| 2 — cuStateVec | `deviceMatAppl*`: ~15 GFLOP/s, HBM AI 0.9 | `expectationPauliKernel`: 29 GFLOP/s, HBM AI 4.9 | 20.5 GFLOP/s |
+| 3 — shared mem, fp64 | `apply_ansatz_shared`, 1 launch: 16.0 GFLOP/s, HBM AI 28 | `expval_pauli_batched_shared`, 1 launch: 20.4 GFLOP/s, HBM AI 400 | 20.0 GFLOP/s |
+| 3 — shared mem, fp32 | 24.6 GFLOP/s, HBM AI 51 | 25.5 GFLOP/s, HBM AI 693 | 25.3 GFLOP/s |
+| 4 — batched grid | `apply_ansatz_batched`: 505 GFLOP/s, HBM AI 30 | `expval_pauli_batched_grid`: 657 GFLOP/s, HBM AI 490 | 641 GFLOP/s |
 
-GQE's tensor-core kernel (`batched_gemm_tc_fp16`, stage4) is confirmed to
-actually execute on tensor cores (nonzero
-`sm__pipe_tensor_cycles_active.sum.pct_of_peak_sustained_elapsed`) at
-`--batch-size 256 --d-model 128`, but isn't in the table above because
-`plot_roofline.py` doesn't yet parse fp16/tensor-core ncu columns — see
-the note in §6 above.
+¹ Stage 1's `profile.sh` captures only the first 60 kernel launches
+(`--launch-count 60`), which at 12 qubits are all gate applications.
+
+How to read it:
+- **Stages 1→2:** stage 1 launches one tiny kernel per gate with a host
+  sync after each. Stage 2 fuses gates and batches all Hamiltonian terms
+  into a few large elementwise ops, so whole-workload throughput rises
+  about 4x. Both stay far below the memory roof: they're overhead- and
+  launch-bound, which the Nsight Systems timeline shows best.
+- **Stage 3:** the whole circuit and all Pauli terms run inside
+  shared memory in just 2 kernel launches. HBM AI jumps from ~0.2 to
+  hundreds, so DRAM traffic is essentially gone, but GFLOP/s stays flat.
+  Each kernel runs as one thread block on one SM, so the GPU is mostly idle.
+- **Stage 4:** one block per statevector in a batch of 32 spreads the same
+  kernels across the GPU: about 30x stage 3's throughput at the same AI.
+  That's the move from memory-traffic-bound to occupancy/compute-bound.
+  Even so, it reaches under 10% of the FP64 FMA ceiling, because a
+  64 KB statevector is small work for an A100.
+
+**GQE** (batch 256, d_model 128, 2 layers)
+
+| Stage | Dominant GEMM kernel(s) | Whole workload |
+|---|---|---|
+| 1 — naive | cuBLAS `gemmSN_TN_kernel<float>`, per-sample loop: 31–107 GFLOP/s | 6.8 GFLOP/s |
+| 2 — batched | cuBLAS `gemmSN_NN_kernel<float>`, batched: 2.1–4.8 TFLOP/s | 706 GFLOP/s |
+| 3 — "fp16" | cuBLAS `gemmSN_NN_kernel<float>`: 2.5–4.8 TFLOP/s, **no tensor-core FLOPs**² | 577 GFLOP/s |
+| 4 — WMMA tensor core | hand-written `batched_gemm_tc_fp16`: 12.1 TFLOP/s (5% of the FP16 tensor ceiling), HBM AI 73 | 5,912 GFLOP/s |
+
+² For these skinny GEMM shapes cuBLAS picks a CUDA-core fp32 kernel even
+though the inputs are fp16, so stage 3's fp16 storage halves memory
+traffic but doesn't engage tensor cores. Only stage 4's hand-written WMMA
+kernel actually runs on tensor cores, which you can see from its nonzero
+`sm__ops_path_tensor_*` counters in ncu.
 
 ---
 
@@ -775,9 +793,11 @@ stage1_naive/             Naive CuPy baseline
 stage2_gpu_native/        Fused/batched/streamed CuPy + cuStateVec comparison
 stage3_memory_opt/        Hand-written CUDA kernels, shared memory, mixed precision
 stage4_compute_opt/       Batched/occupancy-tuned kernels, WMMA tensor-core GEMM
-plot_roofline.py          Overlays all four stages' ncu CSV exports on one roofline chart
-tools/                    One-time generator for the hardcoded H2/LiH Hamiltonian data
-                          (NOT a runtime dependency -- pre-verified output is checked in)
+plot_hierarchical_roofline.py  L1/L2/HBM roofline plots (same numbers as the ncu GUI); run by every profile.sh
+reference_results/        Roofline plots + per-kernel tables from a dedicated A100 reference run (§10)
+tools/                    run_roofline_analysis.sh (whole analysis in one go, for instructors),
+                          verify_vs_gui.py (checks the PNGs against ncu's GUI formulas), and the
+                          one-time H2/LiH Hamiltonian generator (not a runtime dependency)
 ENV_SETUP.md              The long-form version of sections 1-3 above
 CLAUDE.md                 Architecture reference for anyone (human or AI) modifying the code
 ```

@@ -91,8 +91,9 @@ Open `profiles/stage4_vqe_roofline.ncu-rep` and
 
 ## Where this leaves the tutorial
 
-This is the tutorial's final stage. The overall arc, visible in
-`plot_roofline.py`'s combined chart: stage1's kernels sit far below both
+This is the tutorial's final stage. The overall arc, visible in the
+repo-root `roofline_hierarchical_vqe.png` / `roofline_hierarchical_gqe.png`
+(reference copies in `reference_results/`): stage1's kernels sit far below both
 rooflines (launch-overhead-bound); stage2 moves them measurably closer to
 the memory roofline (fusion + batching removes overhead, revealing the
 underlying memory-bound-ness); stage3 pushes further toward the memory

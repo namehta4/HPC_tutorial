@@ -1,79 +1,60 @@
 # Stage 0 Calibration Results
 
-This file records the *measured* (not spec-sheet) achievable bandwidth and
-FLOP/s for the GPU you're actually running on. Every roofline plot in this
-tutorial (`plot_roofline.py`) draws its ceilings from these numbers, not
-from vendor marketing figures — that's the whole point of stage 0.
+This file records the *measured* (not spec-sheet) bandwidth and FLOP/s of
+the GPU you're actually running on. The roofline plots draw ncu's
+theoretical ceilings, and add the measured HBM bandwidth from here as a
+dashed line, so you can see how much of the theoretical peak is really
+achievable.
 
 ## How to fill this in
 
+On a **dedicated, idle GPU**, since numbers from a shared GPU are
+meaningless as ceilings:
+
 ```bash
+salloc -N 1 -C gpu -G 1 -q interactive -t 00:20:00 -A <your_project>   # Perlmutter
 cd stage0_calibration
-./run_calibration.sh
+./run_calibration.sh        # writes bandwidth_fp64.json and gemm_peak.json
 ```
 
-Then copy the printed numbers into the tables below.
+Then replace the numbers below with yours.
 
-**Run this on a dedicated, idle GPU.** On a shared/contended GPU the
-numbers you get are meaningless as roofline ceilings — see the warning at
-the top of `run_calibration.sh`. On Perlmutter:
+## Reference run: A100-SXM4-40GB, Perlmutter (2026-10-22)
 
-```bash
-salloc -N 1 -C gpu -G 1 -q interactive -t 00:20:00 -A <your_project>
-```
+Dedicated interactive node `nid001152`, GPU at 0% utilization.
 
-## Example run (login-node GPU, contended by another job at 100% util)
-
-This is what we measured while writing this tutorial, on a **shared** GPU
-— included here only to show the *format*, and as a cautionary example of
-why calibration matters. Re-run `run_calibration.sh` on your own dedicated
-allocation and replace every number below.
-
-| Metric | Measured (this run, contended GPU) | Notes |
+| Metric | Measured | Spec / theoretical |
 |---|---|---|
-| GPU | NVIDIA A100-PCIE-40GB (compute cap 8.0) | shared with another job at 100% util |
-| Memory bandwidth (Triad, FP64) | ~192 GB/s | spec-sheet peak is ~1935 GB/s — **10x lower**, purely from contention |
-| FP64 GEMM (cuBLAS, CUDA cores) | ~6.7 TFLOP/s | spec-sheet peak ~9.7 TFLOP/s |
-| FP32 GEMM (cuBLAS, TF32 tensor cores) | ~9.6 TFLOP/s | spec-sheet peak ~156 TFLOP/s (also contention-limited) |
-| FP16 GEMM (cuBLAS, tensor cores) | ~120 TFLOP/s | spec-sheet peak ~312 TFLOP/s |
+| HBM bandwidth (fused FP64 STREAM Triad) | **1,361.8 GB/s** | 1,555 GB/s spec; ~1,535 GB/s ncu theoretical at its locked clock |
+| FP64 GEMM (cuBLAS, FP64 tensor cores / DMMA) | 18.36 TFLOP/s | 19.5 TFLOP/s |
+| FP32 GEMM (cuBLAS, TF32 tensor cores) | 151.04 TFLOP/s | 156 TFLOP/s |
+| FP16 GEMM (cuBLAS, tensor cores) | 272.14 TFLOP/s | 312 TFLOP/s |
 
-## 2026-09-23 calibration run (Perlmutter, dedicated debug-QOS allocation) — CURRENT
+Ridge points (peak FLOP/s ÷ measured HBM bandwidth):
 
-| Metric | Measured value | Command used |
-|---|---|---|
-| GPU | NVIDIA A100-SXM4-40GB (compute cap 8.0) | `nvidia-smi --query-gpu=name --format=csv` |
-| GPU utilization at time of run | 0% | `nvidia-smi --query-gpu=utilization.gpu --format=csv` |
-| Memory bandwidth, achieved (GB/s), FP64 Triad | 589.5 GB/s | `python3 bandwidth_probe.py --size-mb 1024 --iters 50 --dtype fp64` |
-| FP64 GEMM peak (TFLOP/s) | 18.64 TFLOP/s | `python3 gemm_peak_probe.py --size 8192 --iters 20` |
-| FP32/TF32 GEMM peak (TFLOP/s) | **155.58 TFLOP/s** | `python3 gemm_peak_probe.py --size 8192 --iters 20` |
-| FP16 GEMM peak (TFLOP/s) | 278.01 TFLOP/s | `python3 gemm_peak_probe.py --size 8192 --iters 20` |
-| Ridge point, FP64 (FLOP/byte) = FP64 peak / BW peak | 18.64e12 / 589.5e9 ≈ 31.6 FLOP/byte | computed |
-| Ridge point, FP32/TF32 (FLOP/byte) = FP32 peak / BW peak | 155.58e12 / 589.5e9 ≈ 263.9 FLOP/byte | computed |
-| Ridge point, FP16 (FLOP/byte) = FP16 peak / BW peak | 278.01e12 / 589.5e9 ≈ 471.6 FLOP/byte | computed |
-
-Node: `nid003281`, allocated via `salloc -N 1 -C gpu -G 1 -q debug -A nstaff -t 00:30:00`.
-Raw JSON: `bandwidth_fp64.json`, `gemm_peak.json`.
-
-**TF32 anomaly (found 2026-09-23, fixed same day):** an earlier calibration
-run on this same GPU measured FP32/TF32 at only ~19.18 TFLOP/s — barely
-above FP64 and nowhere near the A100's ~156 TFLOP/s spec. Root cause:
-`cp.cuda.device.get_cublas_handle()`'s math mode defaulted to
-`CUBLAS_DEFAULT_MATH` (plain FP32, no tensor cores), not
-`CUBLAS_TENSOR_OP_MATH`, contrary to `gemm_peak_probe.py`'s old comment
-claiming cuBLAS enables TF32 automatically for FP32 inputs on Ampere+ in
-this CuPy/cuBLAS version (CuPy 14.2.0). Fixed by having
-`gemm_peak_probe.py` explicitly call
-`cp.cuda.cublas.setMathMode(handle, cp.cuda.cublas.CUBLAS_TENSOR_OP_MATH)`
-around the FP32 GEMM (restored afterward). Confirmed fix: FP32/TF32 jumped
-from ~19 TFLOP/s to 155.58 TFLOP/s, matching spec. **If you see an
-FP32/TF32 number close to your FP64 number, your cuBLAS handle likely
-isn't in tensor-op math mode either — check `gemm_peak_probe.py` is at
-least this version before trusting the number.**
+| Precision | Ridge point |
+|---|---|
+| FP64 GEMM (tensor cores) | 18.36e12 / 1361.8e9 ≈ 13.5 FLOP/byte |
+| TF32 GEMM (tensor cores) | 151.04e12 / 1361.8e9 ≈ 110.9 FLOP/byte |
+| FP16 GEMM (tensor cores) | 272.14e12 / 1361.8e9 ≈ 199.8 FLOP/byte |
+| FP64 CUDA-core FMA (what VQE's elementwise kernels use; ncu theoretical, locked clock) | ~7.5e12 / 1535e9 ≈ 4.9 FLOP/byte |
 
 The **ridge point** is the arithmetic intensity (FLOP per byte moved) at
-which a kernel transitions from memory-bound to compute-bound on this GPU.
-Kernels to the left of the ridge point (lower AI) are memory-bound; kernels
-to the right are compute-bound. You'll see in the stage NOTES.md files that
-our gate-application and expectation-value kernels sit well to the *left*
-of the ridge point in stage1 — that's the central diagnosis this tutorial
-teaches you to make.
+which a kernel crosses from memory-bound to compute-bound on this GPU.
+Kernels to its left are memory-bound; kernels to its right are
+compute-bound.
+
+## Sanity checks
+
+- **Bandwidth must come from a single fused kernel.** `a[:] = b + s*c` in
+  plain CuPy is three kernels that move 7 arrays' worth of data, not 3.
+  Counting 3 under-reports bandwidth by ~2.3x (this GPU "measured" ~590 GB/s
+  that way). `bandwidth_probe.py` uses one `ElementwiseKernel`.
+- **FP64 GEMM uses tensor cores on A100.** 18 TFLOP/s is about 2x the
+  A100's 9.7 TFLOP/s CUDA-core FP64 peak, so it is not the ceiling for
+  elementwise FP64 kernels like VQE's; the roofline plots take that
+  CUDA-core ceiling from ncu.
+- **TF32 should be ~8x FP64 CUDA-core speed.** If your FP32/TF32 number is
+  close to your FP64 number, cuBLAS isn't in tensor-op math mode.
+  `gemm_peak_probe.py` sets `CUBLAS_TENSOR_OP_MATH` explicitly, because
+  CuPy's cuBLAS handle doesn't default to it.

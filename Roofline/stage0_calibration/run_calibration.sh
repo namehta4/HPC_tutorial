@@ -30,4 +30,4 @@ python3 gemm_peak_probe.py --size 8192 --iters 20 --out gemm_peak.json
 
 echo
 echo "Done. Raw JSON in bandwidth_fp64.json / gemm_peak.json."
-echo "Fill these numbers into RESULTS.md and into the ceiling values used by plot_roofline.py."
+echo "Copy these numbers into RESULTS.md. The roofline plots draw the measured HBM bandwidth as a dashed line."

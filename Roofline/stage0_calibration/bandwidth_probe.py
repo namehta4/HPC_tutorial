@@ -14,6 +14,13 @@ Triad:  a[i] = b[i] + scalar * c[i]
 Bytes moved per element: 2 loads + 1 store = 3 * sizeof(dtype)
 Achieved bandwidth (GB/s) = total_bytes / elapsed_seconds / 1e9
 
+The Triad must be ONE fused kernel for that byte count to be true. The
+obvious CuPy one-liner `a[:] = b + scalar * c` is three kernels
+(scalar*c -> tmp, b+tmp -> tmp2, copy tmp2 -> a) that move 7 arrays' worth
+of data, not 3 -- counting 3 under-reports bandwidth by ~2.3x (an A100
+"measured" ~590 GB/s that way vs ~1,370 GB/s fused). Hence the
+ElementwiseKernel below.
+
 Usage:
     python3 bandwidth_probe.py [--size-mb 1024] [--iters 50] [--dtype fp64]
 """
@@ -27,6 +34,10 @@ import cupy as cp
 import numpy as np
 
 
+# One fused kernel: exactly 2 loads + 1 store per element (see module docstring).
+_triad = cp.ElementwiseKernel("T b, T c, T scalar", "T a", "a = b + scalar * c", "stream_triad")
+
+
 def run_triad(n_elements: int, dtype: np.dtype, iters: int, warmup: int) -> float:
     a = cp.empty(n_elements, dtype=dtype)
     b = cp.random.random(n_elements).astype(dtype)
@@ -34,16 +45,22 @@ def run_triad(n_elements: int, dtype: np.dtype, iters: int, warmup: int) -> floa
     scalar = dtype(3.14159)
 
     for _ in range(warmup):
-        a[:] = b + scalar * c
+        _triad(b, c, scalar, a)
     cp.cuda.Stream.null.synchronize()
 
     start = cp.cuda.Event()
     end = cp.cuda.Event()
     start.record()
     for _ in range(iters):
-        a[:] = b + scalar * c
+        _triad(b, c, scalar, a)
     end.record()
     end.synchronize()
+
+    # A fast wrong kernel is no calibration; spot-check the result.
+    idx = cp.arange(0, n_elements, max(1, n_elements // 4096))
+    expected = b[idx].astype(np.float64) + float(scalar) * c[idx].astype(np.float64)
+    if not cp.allclose(a[idx].astype(np.float64), expected, rtol=1e-2 if dtype == np.float16 else 1e-6):
+        raise RuntimeError("stream_triad produced wrong results")
 
     elapsed_ms = cp.cuda.get_elapsed_time(start, end)
     elapsed_s = (elapsed_ms / 1000.0) / iters

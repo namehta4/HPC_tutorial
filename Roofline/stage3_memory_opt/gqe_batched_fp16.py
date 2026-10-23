@@ -7,12 +7,15 @@ memory-traffic optimization independent of the VQE kernel work:
 
   - fp32 weights/activations (CuPy default for this network) halve memory
     traffic vs. a hypothetical fp64 transformer.
-  - fp16 weights/activations halve it again vs. fp32, and on Ampere+ GPUs
-    fp16 matmuls also run on tensor cores (see stage0_calibration/RESULTS.md
-    for this GPU's measured fp16 GEMM throughput vs fp32/TF32).
+  - fp16 weights/activations halve it again vs. fp32. Note that storing
+    operands in fp16 does NOT by itself put the matmuls on tensor cores:
+    for these skinny shapes cuBLAS picks a CUDA-core kernel
+    (gemmSN_NN_kernel<float>), and ncu shows zero tensor-core FLOPs for
+    this stage (README §10). Stage 4's hand-written WMMA kernel is what
+    actually reaches the tensor cores.
 
 The policy network here is intentionally small (d_model=32 by default), so
-at THIS size the FLOPs saved by fp16 tensor cores barely matter -- the
+at THIS size compute throughput barely matters -- the
 matmuls are memory-traffic-bound, not compute-bound, at this scale. That's
 the point: mixed precision helps most exactly where this tutorial's roofline
 analysis says a kernel sits far from the compute roofline but has real
@@ -62,7 +65,7 @@ def attention_fp16(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp
     H, Dh = cfg.n_heads, D // cfg.n_heads
     prefix = f"blocks.{layer_idx}.attn"
 
-    qkv = x @ w[f"{prefix}.qkv.weight"].T  # fp16 matmul -> tensor cores on Ampere+
+    qkv = x @ w[f"{prefix}.qkv.weight"].T  # fp16 operands; cuBLAS still runs this on CUDA cores (see module docstring)
     qkv = qkv.reshape(B, T, 3, H, Dh)
     q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
     q, k, v = (cp.transpose(t, (0, 2, 1, 3)) for t in (q, k, v))

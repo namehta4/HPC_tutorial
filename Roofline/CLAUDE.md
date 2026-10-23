@@ -26,7 +26,8 @@ Stage progression (each stage's `NOTES.md` has the full diagnosis):
 | `stage3_memory_opt` | global memory traffic | hand-written CUDA kernels, whole-circuit-in-shared-memory, FP32/FP16 mixed precision |
 | `stage4_compute_opt` | occupancy / compute throughput | grid-batched statevectors (one block per circuit) for VQE; WMMA tensor-core GEMM + multi-stream for GQE |
 
-The overall arc plotted by `plot_roofline.py`: overhead-bound → memory-bound
+The overall arc plotted by `plot_hierarchical_roofline.py --compare` (reference
+copies in `reference_results/`): overhead-bound → memory-bound
 → compute-bound, with a concrete code change motivating each transition.
 Every stage must reproduce the same physics/weights as the CPU reference —
 speed without correctness doesn't count as progress in this tutorial.
@@ -91,22 +92,102 @@ cd stage0_calibration && ./run_calibration.sh   # writes bandwidth_fp64.json, ge
 # DCGM-vs-ncu permission conflict automatically via dcgmi pause/resume)
 cd stage1_naive && ./profile.sh   # writes profiles/*.nsys-rep, profiles/*.ncu-rep
 
-# Export an ncu report to CSV for plot_roofline.py
-ncu --import profiles/stage1_vqe_roofline.ncu-rep --csv --page raw > profiles/stage1_vqe_roofline.csv
+# Hierarchical L1/L2/HBM roofline plots. Every profile.sh runs this
+# automatically at the end; by hand:
+python3 plot_hierarchical_roofline.py stage1_naive/profiles/stage1_vqe_roofline.ncu-rep  # -> profiles/roofline_plots/
+python3 plot_hierarchical_roofline.py --compare vqe --compare gqe   # -> roofline_hierarchical_{vqe,gqe}.png
 
-# Overlay all four stages on one roofline chart (peak values are TFLOP/s, from stage0's RESULTS.md)
-python3 plot_roofline.py --peak-bw 1500 --peak-flops-fp64 9.7 \
-    --peak-flops-fp32 156 --peak-flops-fp16 312 \
-    --csv stage1_naive/profiles/stage1_vqe_roofline.csv \
-    --csv stage2_gpu_native/profiles/stage2_vqe_fused_roofline.csv \
-    --csv stage3_memory_opt/profiles/stage3_vqe_fp64_roofline.csv \
-    --csv stage4_compute_opt/profiles/stage4_vqe_roofline.csv \
-    --out roofline_overlay.png
+# Roofline-friendly problem sizes (README §6) through the normal profile.sh path
+QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh
 ```
+
+`plot_hierarchical_roofline.py` deliberately reuses the exact metrics and
+formulas of ncu's `SpeedOfLight_Hierarchical*RooflineChart.section` files
+(L1 = `l1tex__lsu_writeback_active_mem_lg` ×128, L2 =
+`lts__lts2xbar_cycles_active` ×32, HBM = `dram__bytes`, ceilings =
+`peak_sustained` × clock), all already in `--set roofline`, so its PNGs
+match the ncu GUI. Keep it that way, and don't swap in `lts__t_bytes` /
+`l1tex__t_bytes`. If you add an ncu run to a `profile.sh`, list the report
+in that script's final `plot_hierarchical_roofline.py` call. Tensor FLOPs
+come from `sm__ops_path_tensor_*`, which already counts FLOPs (verified
+against 2·M·N·K for stage4's padded GQE GEMMs). In `--set roofline`
+exports, `derived__sm__*_pred_on_x2` columns are peak rates (the same for
+every kernel). The achieved rates are `derived__smsp__*` /
+`smsp__*.per_cycle_elapsed`. CUDA-core half-precision counts (the GUI's
+Half chart) are excluded by default (`--include-half` to add them): on
+Ampere, nvcc emits `HFMA2.MMA` as a register move, which the hfma counter
+can't tell from math. Nothing in this tutorial does CUDA-core fp16 math, and
+the artifact was 65% of stage2 fused-VQE's "FLOPs". `tools/verify_vs_gui.py`
+compares against the GUI's Double + Single + Tensor charts accordingly.
 
 If `ncu` fails with `Profiling failed because a driver resource was
 unavailable`, DCGM (or another counter-holding tool) is likely still
 running — see ENV_SETUP.md §4, or check `nvidia-smi` for GPU contention.
+
+## Re-running the full roofline analysis (any machine)
+
+`tools/run_roofline_analysis.sh` does the whole analysis in one go:
+stage0 calibration, then each stage's `./build.sh` (stage3/4) +
+`./profile.sh` + `pytest`, then `tools/verify_vs_gui.py`. It runs at
+roofline-friendly sizes (`QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256`;
+every `profile.sh` honors these env vars) and auto-detects `CUDA_ARCH` from
+`nvidia-smi`. It is path-independent; only steps 1–2 below are
+machine-specific.
+
+1. **Get a dedicated, idle GPU.** Timing and counter numbers on a shared
+   GPU are meaningless. Check `nvidia-smi` shows ~0% utilization before
+   starting. The run takes roughly 45–75 min on an A100.
+   - Perlmutter: `salloc -N 1 -C gpu -G 1 -q interactive -A <project> -t 01:30:00`.
+     The interactive QOS usually starts within minutes. `-q debug` (30 min
+     cap) is too short for all four stages in one job, and was backed up
+     for a long time on 2026-10-22.
+   - Other Slurm clusters: the equivalent exclusive-node `salloc`. A
+     workstation: just make sure nothing else is using the GPU.
+2. **Environment** (ENV_SETUP.md): Python deps (CuPy/cuQuantum matching
+   `nvcc --version`, PyTorch, matplotlib, pytest), plus `ncu`, `nsys`,
+   `nvcc` on `PATH`. On Perlmutter: `module load pytorch/2.13.0`.
+   - ncu needs GPU performance-counter access. On HPC nodes running DCGM,
+     `profile.sh` already does `dcgmi profile --pause/--resume`. On a
+     workstation without admin rights, counters may be restricted
+     (`ERR_NVGPUCTRPERM`); an admin must set
+     `NVreg_RestrictProfilingToAdminUsers=0`, or you run ncu as root.
+   - Login nodes generally can't profile at all (DCGM holds the counters);
+     plotting and verification can run there afterwards.
+3. **Run:**
+   ```bash
+   tools/run_roofline_analysis.sh 2>&1 | tee roofline_analysis.log
+   # override sizes/arch if needed, e.g.:
+   QUBITS=10 CUDA_ARCH=sm_90 tools/run_roofline_analysis.sh 2>&1 | tee roofline_analysis.log
+   ```
+4. **Outputs:**
+   - 10 ncu reports (6 VQE, 4 GQE) + CSVs in `stage*/profiles/`.
+   - Per-report plots in `stage*/profiles/roofline_plots/`.
+   - Cross-stage `roofline_hierarchical_{vqe,gqe}.png` at the repo root.
+   - New `stage0_calibration/{bandwidth_fp64,gemm_peak}.json`. Hand-copy
+     these into `stage0_calibration/RESULTS.md`.
+   - If this run should become the new reference: copy the two cross-stage
+     PNGs and each report's `*_all.png` / `*_kernels.csv` into
+     `reference_results/`, and update README §10's tables.
+5. **Check the log:** each stage's tests passed; the `profile.sh exit` lines
+   are 0; and the final `OVERALL max relative difference PNG vs GUI` is
+   tiny (~1e-6). Differences up to ~1e-3 appear only on near-zero-FLOP
+   kernels, from ncu's 6-decimal CSV rounding. Anything larger means
+   `plot_hierarchical_roofline.py` has drifted from ncu's section formulas.
+   Re-check against `sections/SpeedOfLight_Hierarchical*RooflineChart.section`
+   in that machine's ncu install, since metric names can change across ncu
+   versions and GPU architectures (e.g. `_mem_lgds` replaces `_mem_lg` on
+   CC >= 9.0).
+
+To re-plot or re-verify existing reports without re-profiling (works on a
+login node):
+```bash
+python3 plot_hierarchical_roofline.py stage*_*/profiles/stage*_roofline.ncu-rep --compare vqe --compare gqe
+python3 tools/verify_vs_gui.py stage*_*/profiles/stage*_roofline.csv
+```
+
+Caveat: stage1's `profile.sh` passes `--launch-count 60`, so at 12 qubits
+its ncu report covers only the first 60 kernel launches (mostly
+`gate_apply`). Its aggregate point is not the whole workload.
 
 ## Architecture
 
@@ -157,7 +238,7 @@ reference_cpu.py`'s dense matvec, not by inspection — the phase bookkeeping
 constant, not a function of `k`) is easy to get subtly wrong.
 
 **Tracked kernel names**, consistent across every stage's `NOTES.md`,
-`profile.sh`, and `plot_roofline.py`, so cross-stage roofline comparison is
+`profile.sh`, and the roofline plots, so cross-stage roofline comparison is
 apples-to-apples:
 - `gate_apply` — circuit application (one kernel/gate in stage1 → one
   whole-circuit-in-shared-memory kernel in stage3 → one grid-batched kernel
@@ -199,12 +280,9 @@ of running single-SM kernels back-to-back). Tensor cores (WMMA, in
 `kernels/policy_forward_gemm.cu`) are reserved for GQE's genuinely
 GEMM-shaped linear layers.
 
-**Roofline plotting** (`plot_roofline.py`) parses `ncu --csv --page raw`
-exports looking for a short list of known column-name aliases (ncu's schema
-has shifted across versions); pass `--manual-points <json>` instead when a
-report's columns don't match — this is also currently the only way to plot
-FP16/tensor-core kernels, since the script's FLOP-column heuristics only
-cover FP64/FP32 FMA counters. `--peak-flops-fp64/-fp32/-fp16` take **TFLOP/s**
-(from `stage0_calibration/RESULTS.md`), not GFLOP/s, despite what the
-`--help` text for those flags currently says — trust the module docstring's
-example and the runtime error message over `--help` here.
+**Generated vs. reference outputs**: everything `profile.sh` and
+`plot_hierarchical_roofline.py` write (`stage*/profiles/`, the repo-root
+`roofline_hierarchical_*.png`) is git-ignored via `.gitignore`. The
+committed copies from the dedicated-A100 reference run live in
+`reference_results/`; refresh them, README §10's tables and
+`stage0_calibration/RESULTS.md` together after a new reference run.

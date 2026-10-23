@@ -29,6 +29,15 @@ mkdir -p profiles
 
 MOLECULE="${MOLECULE:-h2}"
 DEPTH="${DEPTH:-3}"
+# Larger, roofline-friendly sizes (README §6): QUBITS=12 D_MODEL=128 BATCH=256 ./profile.sh
+# QUBITS overrides MOLECULE with a random 12-qubit Hamiltonian.
+QUBITS="${QUBITS:-}"
+D_MODEL="${D_MODEL:-32}"
+if [ -n "$QUBITS" ]; then
+    VQE_SIZE=(--molecule random --qubits "$QUBITS")
+else
+    VQE_SIZE=(--molecule "$MOLECULE")
+fi
 BATCH="${BATCH:-8}"
 
 # Nsight Compute needs exclusive access to the GPU's hardware performance
@@ -44,12 +53,12 @@ if command -v dcgmi &> /dev/null; then
     trap 'dcgmi profile --resume || true' EXIT
 fi
 
-echo "=== Nsight Systems timeline: VQE naive (molecule=$MOLECULE depth=$DEPTH) ==="
+echo "=== Nsight Systems timeline: VQE naive (${VQE_SIZE[*]} depth=$DEPTH) ==="
 nsys profile \
     --trace=cuda,nvtx,osrt \
     --output=profiles/stage1_vqe_timeline \
     --force-overwrite=true \
-    python3 vqe_naive.py --molecule "$MOLECULE" --depth "$DEPTH"
+    python3 vqe_naive.py "${VQE_SIZE[@]}" --depth "$DEPTH"
 
 echo
 echo "=== Nsight Compute roofline: VQE naive gate-application + expval kernels ==="
@@ -62,7 +71,7 @@ ncu \
     --launch-count 60 \
     --export profiles/stage1_vqe_roofline \
     --force-overwrite \
-    python3 vqe_naive.py --molecule "$MOLECULE" --depth "$DEPTH"
+    python3 vqe_naive.py "${VQE_SIZE[@]}" --depth "$DEPTH"
 
 echo
 echo "=== Nsight Systems timeline: GQE naive (batch=$BATCH) ==="
@@ -70,7 +79,7 @@ nsys profile \
     --trace=cuda,nvtx,osrt \
     --output=profiles/stage1_gqe_timeline \
     --force-overwrite=true \
-    python3 gqe_naive.py --batch-size "$BATCH"
+    python3 gqe_naive.py --batch-size "$BATCH" --d-model "$D_MODEL"
 
 echo
 echo "=== Nsight Compute roofline: GQE naive policy_forward kernel ==="
@@ -79,12 +88,19 @@ ncu \
     --launch-count 60 \
     --export profiles/stage1_gqe_roofline \
     --force-overwrite \
-    python3 gqe_naive.py --batch-size "$BATCH"
+    python3 gqe_naive.py --batch-size "$BATCH" --d-model "$D_MODEL"
 
 echo
-echo "Done. Reports in profiles/:"
-ls -la profiles/
+echo "=== Hierarchical roofline plots (L1/L2/HBM, same metrics as the ncu GUI) ==="
+# Exports each report to profiles/<name>.csv, writes per-report plots to
+# profiles/roofline_plots/, and refreshes the cross-stage
+# ../roofline_hierarchical_{vqe,gqe}.png from every stage profiled so far.
+python3 ../plot_hierarchical_roofline.py \
+    profiles/stage1_vqe_roofline.ncu-rep \
+    profiles/stage1_gqe_roofline.ncu-rep \
+    --compare vqe --compare gqe \
+    || echo "WARNING: roofline plotting failed (the .ncu-rep reports are fine); retry with: python3 ../plot_hierarchical_roofline.py profiles/*.ncu-rep"
+
 echo
-echo "To export ncu roofline data as CSV for plot_roofline.py:"
-echo "  ncu --import profiles/stage1_vqe_roofline.ncu-rep --csv --page raw > profiles/stage1_vqe_roofline.csv"
-echo "  ncu --import profiles/stage1_gqe_roofline.ncu-rep --csv --page raw > profiles/stage1_gqe_roofline.csv"
+echo "Done. Reports and CSVs in profiles/, roofline plots in profiles/roofline_plots/:"
+ls -la profiles/ profiles/roofline_plots/

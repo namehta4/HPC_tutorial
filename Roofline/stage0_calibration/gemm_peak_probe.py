@@ -75,10 +75,12 @@ def main():
 
     results = {}
 
-    # FP64 -- no tensor cores on A100 for FP64 matmul (that's Hopper+); this
-    # is the "pure CUDA-core" FLOP/s ceiling.
+    # FP64 -- on A100 (and later), cuBLAS DGEMM runs on the FP64 tensor cores
+    # (DMMA, 19.5 TFLOP/s peak), so this is NOT the CUDA-core FP64 ceiling
+    # (9.7 TFLOP/s on A100) that elementwise kernels like VQE's are bound by.
+    # The roofline plots take that CUDA-core ceiling from ncu instead.
     tflops = run_gemm(args.size, args.size, args.size, np.float64, args.iters, args.warmup)
-    print(f"FP64 (CUDA cores):        {tflops:6.2f} TFLOP/s")
+    print(f"FP64 (tensor cores, DMMA): {tflops:6.2f} TFLOP/s")
     results["fp64"] = tflops
 
     # FP32 -- despite cuBLAS docs suggesting Ampere+ defaults to TF32
