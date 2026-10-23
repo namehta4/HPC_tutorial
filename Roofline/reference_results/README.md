@@ -16,12 +16,17 @@ at batch 256, d_model 128. All correctness tests passed for every stage. The
 plotted values match the Nsight Compute GUI's roofline charts
 (`tools/verify_vs_gui.py`).
 
+Every file name ends in `_a100_pm` (A100 on Perlmutter), so it can't be
+mistaken for, or replaced by, the untagged plots `profile.sh` writes when
+you run the tutorial on your own system.
+
 | File | What it shows |
 |---|---|
-| `roofline_hierarchical_vqe.png` | VQE: one aggregate L1 (o) / L2 (s) / HBM (v) point triplet per stage |
-| `roofline_hierarchical_gqe.png` | Same for GQE |
-| `per_stage/<report>_all.png` | Each report's top kernels at L1/L2/HBM |
-| `per_stage/<report>_kernels.csv` | The numbers behind each plot: per kernel, launches, time (s), FLOPs, bytes per level, arithmetic intensity, GFLOP/s |
+| `roofline_hierarchical_vqe_a100_pm.png` | VQE: one aggregate L1 (o) / L2 (s) / HBM (v) point triplet per stage |
+| `roofline_hierarchical_gqe_a100_pm.png` | Same for GQE |
+| `story/roofline_story_{vqe,gqe}_<n>_a100_pm.png` | Slide sequence: stages 1..n at HBM only, with all ceilings, identical axes, and speedup arrows |
+| `per_stage/<report>_all_a100_pm.png` | Each report's top kernels at L1/L2/HBM |
+| `per_stage/<report>_kernels_a100_pm.csv` | The numbers behind each plot: per kernel, launches, time (s), FLOPs, bytes per level, arithmetic intensity, GFLOP/s |
 
 Your absolute numbers will differ on other GPUs (and somewhat from run to
 run). Compare the *shape*, meaning which way each stage moves and why, not

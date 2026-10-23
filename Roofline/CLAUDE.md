@@ -95,7 +95,7 @@ cd stage1_naive && ./profile.sh   # writes profiles/*.nsys-rep, profiles/*.ncu-r
 # Hierarchical L1/L2/HBM roofline plots. Every profile.sh runs this
 # automatically at the end; by hand:
 python3 plot_hierarchical_roofline.py stage1_naive/profiles/stage1_vqe_roofline.ncu-rep  # -> profiles/roofline_plots/
-python3 plot_hierarchical_roofline.py --compare vqe --compare gqe   # -> roofline_hierarchical_{vqe,gqe}.png
+python3 plot_hierarchical_roofline.py --compare vqe --compare gqe   # -> roofline_hierarchical_{vqe,gqe}.png + roofline_story_{vqe,gqe}_<n>.png
 
 # Roofline-friendly problem sizes (README §6) through the normal profile.sh path
 QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh
@@ -166,8 +166,10 @@ machine-specific.
    - New `stage0_calibration/{bandwidth_fp64,gemm_peak}.json`. Hand-copy
      these into `stage0_calibration/RESULTS.md`.
    - If this run should become the new reference: copy the two cross-stage
-     PNGs and each report's `*_all.png` / `*_kernels.csv` into
-     `reference_results/`, and update README §10's tables.
+     PNGs, the `roofline_story_*.png` slides (into `story/`) and each
+     report's `*_all.png` / `*_kernels.csv` into `reference_results/`,
+     adding a system tag before the extension (the current set uses
+     `_a100_pm` for A100/Perlmutter), and update README §10's tables.
 5. **Check the log:** each stage's tests passed; the `profile.sh exit` lines
    are 0; and the final `OVERALL max relative difference PNG vs GUI` is
    tiny (~1e-6). Differences up to ~1e-3 appear only on near-zero-FLOP
@@ -282,7 +284,7 @@ GEMM-shaped linear layers.
 
 **Generated vs. reference outputs**: everything `profile.sh` and
 `plot_hierarchical_roofline.py` write (`stage*/profiles/`, the repo-root
-`roofline_hierarchical_*.png`) is git-ignored via `.gitignore`. The
+`roofline_hierarchical_*.png`, `roofline_story_*.png`) is git-ignored via `.gitignore`. The
 committed copies from the dedicated-A100 reference run live in
 `reference_results/`; refresh them, README §10's tables and
 `stage0_calibration/RESULTS.md` together after a new reference run.

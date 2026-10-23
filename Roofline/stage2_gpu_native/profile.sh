@@ -81,7 +81,8 @@ echo
 echo "=== Hierarchical roofline plots (L1/L2/HBM, same metrics as the ncu GUI) ==="
 # Exports each report to profiles/<name>.csv, writes per-report plots to
 # profiles/roofline_plots/, and refreshes the cross-stage
-# ../roofline_hierarchical_{vqe,gqe}.png from every stage profiled so far.
+# ../roofline_hierarchical_{vqe,gqe}.png and the HBM-only
+# ../roofline_story_{vqe,gqe}_<n>.png slides from every stage profiled so far.
 python3 ../plot_hierarchical_roofline.py \
     profiles/stage2_vqe_fused_roofline.ncu-rep \
     profiles/stage2_vqe_custatevec_roofline.ncu-rep \

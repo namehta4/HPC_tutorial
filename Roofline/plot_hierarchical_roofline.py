@@ -129,20 +129,23 @@ WORKLOAD_COMPUTE_ROOFS = {
     "gqe": ["FP64 FMA", "FP32 FMA", "FP16 Tensor"],
 }
 
-# The report each stage's profile.sh writes for each workload, in tutorial order.
+# The report each stage's profile.sh writes for each workload, in tutorial
+# order: (label, report path, stage number). The first report of each stage
+# is that stage's step on the --compare "story" path; extras (stage3 fp32)
+# are drawn alongside it.
 COMPARE_REPORTS = {
     "vqe": [
-        ("Stage 1", "stage1_naive/profiles/stage1_vqe_roofline"),
-        ("Stage 2", "stage2_gpu_native/profiles/stage2_vqe_fused_roofline"),
-        ("Stage 3 (fp64)", "stage3_memory_opt/profiles/stage3_vqe_fp64_roofline"),
-        ("Stage 3 (fp32)", "stage3_memory_opt/profiles/stage3_vqe_fp32_roofline"),
-        ("Stage 4", "stage4_compute_opt/profiles/stage4_vqe_roofline"),
+        ("Stage 1", "stage1_naive/profiles/stage1_vqe_roofline", 1),
+        ("Stage 2", "stage2_gpu_native/profiles/stage2_vqe_fused_roofline", 2),
+        ("Stage 3 (fp64)", "stage3_memory_opt/profiles/stage3_vqe_fp64_roofline", 3),
+        ("Stage 3 (fp32)", "stage3_memory_opt/profiles/stage3_vqe_fp32_roofline", 3),
+        ("Stage 4", "stage4_compute_opt/profiles/stage4_vqe_roofline", 4),
     ],
     "gqe": [
-        ("Stage 1", "stage1_naive/profiles/stage1_gqe_roofline"),
-        ("Stage 2", "stage2_gpu_native/profiles/stage2_gqe_roofline"),
-        ("Stage 3 (fp16)", "stage3_memory_opt/profiles/stage3_gqe_fp16_roofline"),
-        ("Stage 4 (tensor core)", "stage4_compute_opt/profiles/stage4_gqe_tc_roofline"),
+        ("Stage 1", "stage1_naive/profiles/stage1_gqe_roofline", 1),
+        ("Stage 2", "stage2_gpu_native/profiles/stage2_gqe_roofline", 2),
+        ("Stage 3 (fp16)", "stage3_memory_opt/profiles/stage3_gqe_fp16_roofline", 3),
+        ("Stage 4 (tensor core)", "stage4_compute_opt/profiles/stage4_gqe_tc_roofline", 4),
     ],
 }
 
@@ -330,7 +333,7 @@ def _bw_label(ax, text, bw, y_label, bold=True, ha="right"):
 
 
 def plot_roofs(fig, ax, limits, mem_roofs: dict, comp_roofs: dict, levels: list[str]):
-    """Gray ceilings with bold annotations."""
+    """Gray ceilings with bold annotations, one memory ceiling per entry of `levels`."""
     xmin, xmax, ymin, ymax = limits
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -338,6 +341,10 @@ def plot_roofs(fig, ax, limits, mem_roofs: dict, comp_roofs: dict, levels: list[
     ax.set_ylim(ymin, ymax)
     ax.set_xlabel("Arithmetic Intensity [FLOP/Byte]")
     ax.set_ylabel("Performance [GFLOP/s]")
+    # Faint grid behind everything: solid at decades, dotted at minor ticks.
+    ax.set_axisbelow(True)
+    ax.grid(True, which="major", linestyle="-", linewidth=0.6, color="gray", alpha=0.3)
+    ax.grid(True, which="minor", linestyle=":", linewidth=0.5, color="gray", alpha=0.3)
 
     x = np.logspace(np.log10(xmin), np.log10(xmax), 2000)
     for lv in levels:
@@ -427,6 +434,50 @@ def plot_overview(path, title, groups: list[tuple[str, dict]], levels, mem_roofs
     plt.close(fig)
 
 
+def plot_story(path, title, groups: list[tuple[str, dict, int, int]], upto: int, limits, mem_roofs, comp_roofs):
+    """One slide of the --compare "story": every ceiling, but only HBM points,
+    for stages 1..`upto`. groups = [(label, totals, stage, color index)].
+    The newest stage is drawn solid and earlier ones faded; arrows join the
+    main path (first report of each stage) and are labeled with the speedup."""
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plot_roofs(fig, ax, limits, mem_roofs, comp_roofs, LEVELS)
+
+    shown = [g for g in groups if g[2] <= upto]
+    path_pts = {}
+    for label, g, stage, ci in shown:
+        path_pts.setdefault(stage, g)
+        ax.plot(g["AI HBM"], g["gflops"], c=KERNEL_COLORS[ci % len(KERNEL_COLORS)], marker="o", linestyle="None",
+                ms=15, alpha=1.0 if stage == upto else 0.45, zorder=3, **MARKER_EDGE)
+    stages = sorted(path_pts)
+    for a, b in zip(stages, stages[1:]):
+        p, q = path_pts[a], path_pts[b]
+        new = b == upto
+        ax.annotate("", xy=(q["AI HBM"], q["gflops"]), xytext=(p["AI HBM"], p["gflops"]),
+                    arrowprops=dict(arrowstyle="-|>", color="k", lw=2 if new else 1, alpha=1.0 if new else 0.45,
+                                    shrinkA=10, shrinkB=10), zorder=2)
+        # Speedup label at the arrow's midpoint, pushed off the arrow along its
+        # normal (upper side) so it never sits on the line or a marker.
+        mid = (np.sqrt(p["AI HBM"] * q["AI HBM"]), np.sqrt(p["gflops"] * q["gflops"]))
+        (x0, y0), (x1, y1) = ax.transData.transform([(p["AI HBM"], p["gflops"]), (q["AI HBM"], q["gflops"])])
+        nx, ny = -(y1 - y0), x1 - x0
+        norm = np.hypot(nx, ny) or 1.0
+        nx, ny = (nx / norm, ny / norm) if ny >= 0 else (-nx / norm, -ny / norm)
+        # Anchor the text by its edge nearest the arrow, so wide labels clear it too.
+        ha = "center" if abs(nx) < 0.5 else ("left" if nx > 0 else "right")
+        va = "center" if abs(ny) < 0.5 else "bottom"
+        ax.annotate(f"{q['gflops'] / p['gflops']:.1f}x", xy=mid, xytext=(8 * nx, 8 * ny), textcoords="offset points",
+                    ha=ha, va=va, fontsize=13 if new else 11, weight="bold" if new else "normal",
+                    alpha=1.0 if new else 0.6)
+
+    ax.legend(handles=[mpatches.Patch(color=KERNEL_COLORS[ci % len(KERNEL_COLORS)], label=label,
+                                      alpha=1.0 if stage == upto else 0.45)
+                       for label, _, stage, ci in shown],
+              loc="lower right", fontsize=11, frameon=False)
+    _title(ax, title)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 # --- drivers --------------------------------------------------------------------
 
 
@@ -507,8 +558,10 @@ def plot_report(report: str, args) -> None:
 
 
 def plot_compare(workload: str, args) -> None:
+    """Cross-stage overview (all levels) plus the HBM-only "story" sequence:
+    roofline_story_<workload>_<n>.png shows stages 1..n."""
     groups, mem_roofs, comp_roofs = [], None, None
-    for label, base in COMPARE_REPORTS[workload]:
+    for ci, (label, base, stage) in enumerate(COMPARE_REPORTS[workload]):
         try:
             csv_path = _resolve_csv(os.path.join(REPO_ROOT, base))
         except FileNotFoundError:
@@ -518,14 +571,24 @@ def plot_compare(workload: str, args) -> None:
         mem_roofs, comp_roofs = mem_roofs or mem, comp_roofs or comp
         tot = aggregate(kernels)
         if tot["gflops"] > 0:
-            groups.append((label, tot))
+            groups.append((label, tot, stage, ci))
     if not groups:
         print(f"No {workload.upper()} reports found for --compare; run the stages' profile.sh first.")
         return
     mem_roofs, comp_roofs = select_roofs(workload, mem_roofs, comp_roofs, args.roofs)
     out = args.out or os.path.join(REPO_ROOT, f"roofline_hierarchical_{workload}.png")
-    plot_overview(out, f"{workload.upper()}: stage progression (all kernels)", groups, LEVELS, mem_roofs, comp_roofs)
+    plot_overview(out, f"{workload.upper()}: stage progression (all kernels)", [g[:2] for g in groups],
+                  LEVELS, mem_roofs, comp_roofs)
     print(f"Wrote {out} ({', '.join(g[0] for g in groups)})")
+
+    # Same axes on every slide, so the sequence reads like an animation.
+    limits = _axis_limits([(g["AI HBM"], g["gflops"]) for _, g, _, _ in groups], comp_roofs)
+    stages = sorted({g[2] for g in groups})
+    for n in stages:
+        story = os.path.join(os.path.dirname(out), f"roofline_story_{workload}_{n}.png")
+        steps = " -> ".join(str(s) for s in stages if s <= n)
+        plot_story(story, f"{workload.upper()} (HBM): stage {steps}", groups, n, limits, mem_roofs, comp_roofs)
+    print(f"Wrote roofline_story_{workload}_{{{','.join(map(str, stages))}}}.png (HBM-only stage-by-stage sequence)")
 
 
 def main():

@@ -2,3 +2,4 @@
 # copies of a dedicated-node run live in reference_results/ instead.
 stage*/profiles/
 /roofline_hierarchical_*.png
+/roofline_story_*.png

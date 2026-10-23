@@ -328,8 +328,15 @@ on the reports it just wrote:
 - `profiles/roofline_plots/<report>_kernels.csv`: the numbers behind the plots.
 - `roofline_hierarchical_vqe.png` / `roofline_hierarchical_gqe.png` at the
   repo root: one point triplet per stage profiled so far, i.e. the
-  tutorial's stage-by-stage progression. Reference copies from a
-  dedicated A100 run are in `reference_results/` (§10).
+  tutorial's stage-by-stage progression.
+- `roofline_story_vqe_<n>.png` / `roofline_story_gqe_<n>.png` at the repo
+  root: a slide sequence for presenting the progression. Slide 1 shows
+  stage 1 and each later slide adds the next stage, with all ceilings
+  drawn but only HBM points, identical axes, and arrows labeled with the
+  speedup.
+
+Reference copies of all of these from a dedicated A100 run are in
+`reference_results/` (§10).
 
 The points and ceilings use the same `--set roofline` metrics and formulas
 as the Nsight Compute GUI's "Hierarchical Roofline" charts, so they match
@@ -669,9 +676,10 @@ That's a "know when *not* to reach for a tool" moment, not an oversight.
 
 - Line up the wall times you saw printed across all four `vqe_*.py` runs —
   no profiling needed for this comparison, you already have the numbers.
-- Show `reference_results/roofline_hierarchical_vqe.png` and
-  `roofline_hierarchical_gqe.png` (§10): the kernel-count story you just
-  watched live is the same story those charts tell visually.
+- Step through `reference_results/story/roofline_story_vqe_1_a100_pm.png` … `_4_a100_pm.png`
+  (then the GQE set): each slide adds one stage, with an arrow showing the
+  speedup. The kernel-count story you just watched live is the same story
+  those slides tell visually.
 - Take-home: run each stage's full `QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh`
   (nsys timeline + ncu roofline + plots) on your own allocation. This
   generates your own roofline charts from your own GPU's numbers in
@@ -686,7 +694,9 @@ That's a "know when *not* to reach for a tool" moment, not an oversight.
 this tutorial's reference run: an A100-SXM4-40GB on a dedicated Perlmutter
 node, every stage's `profile.sh` run with `QUBITS=12 D_MODEL=128 BATCH=256
 GQE_BATCH=256`. Absolute numbers are hardware-specific, so compare the
-*shape* of your results with these, not the digits.
+*shape* of your results with these, not the digits. The reference files
+are tagged `_a100_pm`, so your own runs (which write untagged plots under
+`stage*/profiles/` and the repo root) never overwrite them.
 
 Ceilings under ncu (clocks locked at ~1.1 GHz): HBM ≈1,535 GB/s, L2
 ≈5,300 GB/s, L1 ≈14,900 GB/s, FP64 FMA ≈7.5 TFLOP/s, FP16 tensor
@@ -794,7 +804,7 @@ stage2_gpu_native/        Fused/batched/streamed CuPy + cuStateVec comparison
 stage3_memory_opt/        Hand-written CUDA kernels, shared memory, mixed precision
 stage4_compute_opt/       Batched/occupancy-tuned kernels, WMMA tensor-core GEMM
 plot_hierarchical_roofline.py  L1/L2/HBM roofline plots (same numbers as the ncu GUI); run by every profile.sh
-reference_results/        Roofline plots + per-kernel tables from a dedicated A100 reference run (§10)
+reference_results/        Roofline plots + per-kernel tables from the A100/Perlmutter reference run (§10; files tagged _a100_pm)
 tools/                    run_roofline_analysis.sh (whole analysis in one go, for instructors),
                           verify_vs_gui.py (checks the PNGs against ncu's GUI formulas), and the
                           one-time H2/LiH Hamiltonian generator (not a runtime dependency)
