@@ -36,10 +36,64 @@ running anything; it's written so you don't need outside context.
 
 ---
 
-## Quick start: the per-stage loop
+## Quick start
 
-Once your environment is set up (§2 Perlmutter / §3 elsewhere) and you're
-on a **dedicated, idle GPU** (§5), the whole tutorial is the same loop
+### Step 1 — Set up (once per machine; the module/env step every session)
+
+**On NERSC Perlmutter** (details: §2):
+
+```bash
+git clone https://github.com/namehta4/HPC_tutorial.git && cd HPC_tutorial/Roofline
+
+# Python 3.12 + NumPy/SciPy/PyTorch. Needed in every new shell, including
+# on the compute node after salloc -- modules don't carry over.
+module load pytorch/2.13.0
+
+# One-time: the remaining dependencies, into your user site-packages.
+# Use cupy-cuda12x / cuquantum-python-cu12 instead if `nvcc --version` says CUDA 12.x.
+pip install --user cupy-cuda13x cuquantum-python-cu13 qutip pytest
+
+# Get a dedicated GPU node (timings on shared login-node GPUs are meaningless, §5),
+# then load the module again there.
+salloc -N 1 -C gpu -G 1 -q interactive -t 01:30:00 -A <your_NERSC_project>
+module load pytorch/2.13.0
+```
+
+**On any other Linux machine with an NVIDIA GPU** (details: §3): first
+install the CUDA Toolkit and Nsight Systems/Compute (check with
+`nvcc --version`, `nsys --version`, `ncu --version`), then:
+
+```bash
+git clone https://github.com/namehta4/HPC_tutorial.git && cd HPC_tutorial/Roofline
+
+# Either a venv ...
+python3 -m venv venv && source venv/bin/activate
+# ... or a conda env:
+#   conda create -n roofline python=3.12 -y && conda activate roofline
+
+# requirements.txt targets CUDA 13.x; for CUDA 12.x, change its two cu13 lines
+# to cupy-cuda12x / cuquantum-python-cu12 first.
+pip install -r requirements.txt
+```
+
+Re-activate the venv/conda env in every new shell. Profiling needs access
+to the GPU's performance counters. If `ncu` reports `ERR_NVGPUCTRPERM`, see
+§11.
+
+**Then, on either system, check that everything works:**
+
+```bash
+nvidia-smi --query-gpu=name,compute_cap,utilization.gpu --format=csv   # GPU idle? note compute_cap
+python3 -c "import cupy as cp; print(cp.arange(5).sum())"               # CuPy sees the GPU -> 10
+```
+
+`compute_cap` gives the `CUDA_ARCH` for building stage3/4's CUDA kernels:
+8.0 → `sm_80` (A100, the default), 8.6 → `sm_86`, 8.9 → `sm_89`,
+9.0 → `sm_90` (H100).
+
+### Step 2 — Run the per-stage loop
+
+On your **dedicated, idle GPU**, the whole tutorial is the same loop
 repeated per stage:
 
 ```bash
@@ -54,6 +108,8 @@ python3 vqe_naive.py --molecule random --qubits 12 --depth 3   # run it directly
 QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh  # nsys timeline + ncu reports + roofline plots
 cd ..
 ```
+
+### Step 3 — Look at the results
 
 After each stage's `profile.sh`, look at:
 
@@ -71,7 +127,10 @@ After each stage's `profile.sh`, look at:
 The repo-root `roofline_hierarchical_vqe.png` / `roofline_hierarchical_gqe.png`
 are refreshed after every stage with one point triplet per completed stage,
 so the overhead-bound → memory-bound → compute-bound progression builds up
-as you go.
+as you go. `roofline_story_{vqe,gqe}_<n>.png` show the same progression as
+a slide sequence (HBM points only, with speedup arrows). The reference
+versions from an A100 on Perlmutter are in `reference_results/` (files
+tagged `_a100_pm`).
 
 Two things to know:
 - **Each `profile.sh` takes several minutes**, because ncu replays every
@@ -766,6 +825,14 @@ dcgmi profile --resume
 If `dcgmi` isn't installed, this is a non-issue for you; if it IS installed
 and pausing doesn't help, check `ps aux | grep dcgm` and consult your
 cluster's sysadmin.
+
+**`ncu` fails with `ERR_NVGPUCTRPERM` (no permission to access GPU
+performance counters).** Common on workstations: by default the NVIDIA
+driver lets only admins read the counters. Either run `ncu` (i.e.
+`profile.sh`) with `sudo`, or have an admin allow all users. On Linux,
+add `options nvidia NVreg_RestrictProfilingToAdminUsers=0` to a file in
+`/etc/modprobe.d/` and reboot. Details:
+[developer.nvidia.com/ERR_NVGPUCTRPERM](https://developer.nvidia.com/ERR_NVGPUCTRPERM).
 
 **`nvcc: command not found` when running `build.sh`.** The CUDA Toolkit
 isn't loaded/installed. On Perlmutter, `module load pytorch/2.13.0`

@@ -82,10 +82,12 @@ automatically carry over).
    dependencies:
    ```bash
    python3 -m venv venv && source venv/bin/activate
+   # or, with conda:  conda create -n roofline python=3.12 -y && conda activate roofline
    pip install -r requirements.txt
    ```
    Pick the `cupy-cudaXXx` / `cuquantum-python-cuXX` variant in
    `requirements.txt` matching your CUDA major version (12 or 13).
+   Re-activate the venv/conda env in every new shell.
 4. **Check GPU compute capability** with
    `nvidia-smi --query-gpu=compute_cap --format=csv` — you'll need this
    number (e.g. `8.0`, `8.6`, `8.9`, `9.0`) to pass as `-arch=sm_XX` when
@@ -120,6 +122,13 @@ harmless no-op — but if `ncu` still fails with the error above, check
 whether DCGM (or a similar tool, like the OS-level `nvidia-smi dmon`) is
 running (`ps aux | grep dcgm`) and consult your cluster's documentation or
 your sysadmin for how to pause it.
+
+On a **workstation**, `ncu` may instead fail with `ERR_NVGPUCTRPERM`:
+by default the NVIDIA driver lets only admins read the performance
+counters. Run `ncu` / `profile.sh` with `sudo`, or have an admin add
+`options nvidia NVreg_RestrictProfilingToAdminUsers=0` to a file in
+`/etc/modprobe.d/` and reboot. See
+[developer.nvidia.com/ERR_NVGPUCTRPERM](https://developer.nvidia.com/ERR_NVGPUCTRPERM).
 
 ## 5. Shared GPU warning (why this matters for a *performance* tutorial)
 
