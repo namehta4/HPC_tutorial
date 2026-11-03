@@ -170,6 +170,10 @@ machine-specific.
      report's `*_all.png` / `*_kernels.csv` into `reference_results/`,
      adding a system tag before the extension (the current set uses
      `_a100_pm` for A100/Perlmutter), and update README §10's tables.
+     Also zip every `stage*/profiles/*.{ncu,nsys}-rep` into
+     `reference_results/profiles/<name>_<tag>.<ext>.zip` (tag the file
+     inside too). Zipped, they total ~59 MB; raw, they're 677 MB, with
+     several ncu reports over GitHub's 100 MB file limit.
 5. **Check the log:** each stage's tests passed; the `profile.sh exit` lines
    are 0; and the final `OVERALL max relative difference PNG vs GUI` is
    tiny (~1e-6). Differences up to ~1e-3 appear only on near-zero-FLOP

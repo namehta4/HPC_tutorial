@@ -758,7 +758,10 @@ node, every stage's `profile.sh` run with `QUBITS=12 D_MODEL=128 BATCH=256
 GQE_BATCH=256`. Absolute numbers are hardware-specific, so compare the
 *shape* of your results with these, not the digits. The reference files
 are tagged `_a100_pm`, so your own runs (which write untagged plots under
-`stage*/profiles/` and the repo root) never overwrite them.
+`stage*/profiles/` and the repo root) never overwrite them. The raw ncu and
+nsys reports are in `reference_results/profiles/` as zips, so you can open
+them in the Nsight Compute / Nsight Systems GUIs on a laptop without a GPU
+(see `reference_results/README.md`).
 
 Ceilings under ncu (clocks locked at ~1.1 GHz): HBM ≈1,535 GB/s, L2
 ≈5,300 GB/s, L1 ≈14,900 GB/s, FP64 FMA ≈7.5 TFLOP/s, FP16 tensor
@@ -894,7 +897,7 @@ stage2_gpu_native/        Fused/batched/streamed CuPy + cuStateVec comparison
 stage3_memory_opt/        Hand-written CUDA kernels, shared memory, mixed precision
 stage4_compute_opt/       Batched/occupancy-tuned VQE kernels, fused WMMA tensor-core GQE kernels
 plot_hierarchical_roofline.py  L1/L2/HBM roofline plots (same numbers as the ncu GUI); run by every profile.sh
-reference_results/        Roofline plots + per-kernel tables from the A100/Perlmutter reference run (§10; files tagged _a100_pm)
+reference_results/        Roofline plots, per-kernel tables and zipped ncu/nsys reports from the A100/Perlmutter reference run (§10; files tagged _a100_pm)
 tools/                    run_roofline_analysis.sh (whole analysis in one go, for instructors),
                           verify_vs_gui.py (checks the PNGs against ncu's GUI formulas), and the
                           one-time H2/LiH Hamiltonian generator (not a runtime dependency)
