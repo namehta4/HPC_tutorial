@@ -10,6 +10,13 @@ If you're new to HPC clusters or CUDA development, read the whole page —
 it's written to be followed step by step, with no assumed prior GPU
 experience.
 
+`./run_all.sh --check` at the repo root automates the Python part of this
+page (it uses an interpreter that already has the dependencies, or creates
+`./.venv` with CuPy/cuQuantum matched to `nvcc --version`). It also checks
+the GPU, tools, and counter-access items from §1, §4 and §5, and prints the
+fix for whatever is missing. `./run_all.sh` then runs the whole analysis
+(README Quick start).
+
 ## 1. Do you have what you need?
 
 Check these three things before doing anything else:

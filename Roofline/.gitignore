@@ -3,3 +3,7 @@
 stage*/profiles/
 /roofline_hierarchical_*.png
 /roofline_story_*.png
+
+# run_all.sh: its venv and logs
+/.venv/
+/roofline_analysis*.log

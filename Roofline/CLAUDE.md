@@ -134,6 +134,18 @@ every `profile.sh` honors these env vars) and auto-detects `CUDA_ARCH` from
 `nvidia-smi`. It is path-independent; only steps 1–2 below are
 machine-specific.
 
+`run_all.sh` at the repo root is the participant-facing wrapper around it.
+It does step 2 automatically (an existing Python with every dependency, the
+`pytorch/2.13.0` module on Perlmutter, or a fresh `./.venv` with cuXX
+wheels matched to `nvcc`). It then runs preflight checks: tools on PATH,
+CuPy on the GPU, not a login node, an idle GPU, disk space, Slurm time left,
+and a one-kernel `ncu` counter probe under `dcgmi profile --pause`. After
+the run it prints a per-stage pass/fail summary parsed from the log's
+`##### <stage> profile.sh exit` / pytest lines. If you change those marker
+lines in `run_roofline_analysis.sh`, update the summary parser in
+`run_all.sh`. `--check` stops after the preflight; `--force` downgrades the
+login-node and idle-GPU checks to warnings.
+
 1. **Get a dedicated, idle GPU.** Timing and counter numbers on a shared
    GPU are meaningless. Check `nvidia-smi` shows ~0% utilization before
    starting. The run takes roughly 45–75 min on an A100.

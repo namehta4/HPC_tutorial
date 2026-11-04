@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full roofline analysis, end to end, on whatever GPU this runs on:
-# stage0 calibration, then every stage's profile.sh (nsys + ncu + hierarchical
+# stage0 calibration (+ its ceilings plot), then every stage's profile.sh (nsys + ncu + hierarchical
 # roofline plots) at roofline-friendly sizes, each stage's correctness tests,
 # the cross-stage plots and HBM-only "story" slides, and finally a numerical
 # check that the PNGs match the Nsight Compute GUI.
@@ -43,6 +43,9 @@ cd "$REPO"
 # Each profile.sh already refreshes these; regenerating once more at the end
 # guarantees the full set even if one stage's plotting step failed.
 python3 plot_hierarchical_roofline.py --compare vqe --compare gqe
+
+echo "##### stage0 ceilings plot"
+python3 stage0_calibration/plot_calibration.py
 
 echo "##### PNG vs Nsight Compute GUI check"
 python3 tools/verify_vs_gui.py stage*_*/profiles/stage*_roofline.csv | grep -E "^===|ceilings max|kernels compared|OVERALL"

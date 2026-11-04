@@ -38,6 +38,27 @@ running anything; it's written so you don't need outside context.
 
 ## Quick start
 
+### Shortcut: everything in one command
+
+To get all the plots for your GPU without stepping through the stages by
+hand, clone the repo on a **dedicated GPU node** and run:
+
+```bash
+git clone https://github.com/namehta4/HPC_tutorial.git && cd HPC_tutorial/Roofline
+./run_all.sh --check   # seconds: sets up Python, then checks GPU, tools, counter access
+./run_all.sh           # 45-75 min on an A100: calibration, all stages, plots, summary
+```
+
+`run_all.sh` uses a Python that already has the dependencies (on
+Perlmutter it loads `pytorch/2.13.0` itself), or else creates `./.venv`
+with CuPy/cuQuantum matched to your `nvcc --version`. Before starting, it
+checks for `nvcc`/`ncu`/`nsys`, a working GPU, a non-login node, an idle
+GPU, free disk, Slurm time left, and that `ncu` can read the GPU's
+performance counters. If a check fails, it prints the fix and stops. At the
+end it prints a pass/fail line per stage and where the plots are. You still
+have to get the GPU yourself (on Perlmutter, the `salloc` in Step 1 below).
+Use the steps below to learn what each stage does.
+
 ### Step 1 — Set up (once per machine; the module/env step every session)
 
 **On NERSC Perlmutter** (details: §2):
@@ -891,6 +912,7 @@ modules, etc.) if you're going to modify the code rather than just run it.
 common/                  Shared, must-stay-bit-compatible code every stage builds on:
                           ansatz.py, hamiltonians.py, reference_cpu.py (the correctness
                           oracle), gqe_policy_ref.py, config.py (shared CLI args)
+run_all.sh                One command: Python setup, preflight checks, full analysis, summary (Quick start)
 stage0_calibration/       Bandwidth + GEMM peak-FLOPs probes, RESULTS.md
 stage1_naive/             Naive CuPy baseline
 stage2_gpu_native/        Fused/batched/streamed CuPy + cuStateVec comparison
