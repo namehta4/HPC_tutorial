@@ -26,6 +26,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 mkdir -p profiles
+source "$SCRIPT_DIR/../tools/ncu_packed_fp32.sh"   # packed-FP32 counters on CC 10.x
 
 MOLECULE="${MOLECULE:-h2}"
 DEPTH="${DEPTH:-3}"
@@ -68,6 +69,7 @@ echo "=== Nsight Compute roofline: VQE naive gate-application + expval kernels =
 # capture of every single one would be extremely slow.
 ncu \
     --set roofline \
+    ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --launch-count 60 \
     --export profiles/stage1_vqe_roofline \
     --force-overwrite \
@@ -85,6 +87,7 @@ echo
 echo "=== Nsight Compute roofline: GQE naive policy_forward kernel ==="
 ncu \
     --set roofline \
+    ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --launch-count 60 \
     --export profiles/stage1_gqe_roofline \
     --force-overwrite \

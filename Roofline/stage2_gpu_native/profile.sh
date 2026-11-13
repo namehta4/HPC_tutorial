@@ -11,6 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 mkdir -p profiles
+source "$SCRIPT_DIR/../tools/ncu_packed_fp32.sh"   # packed-FP32 counters on CC 10.x
 
 MOLECULE="${MOLECULE:-h2}"
 DEPTH="${DEPTH:-3}"
@@ -41,6 +42,7 @@ echo
 echo "=== Nsight Compute roofline: VQE fused gate-application + expval kernels ==="
 ncu \
     --set roofline \
+    ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --export profiles/stage2_vqe_fused_roofline \
     --force-overwrite \
     python3 vqe_fused.py "${VQE_SIZE[@]}" --depth "$DEPTH"
@@ -57,6 +59,7 @@ echo
 echo "=== Nsight Compute roofline: VQE cuStateVec kernels ==="
 ncu \
     --set roofline \
+    ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --export profiles/stage2_vqe_custatevec_roofline \
     --force-overwrite \
     python3 vqe_custatevec.py "${VQE_SIZE[@]}" --depth "$DEPTH"
@@ -73,6 +76,7 @@ echo
 echo "=== Nsight Compute roofline: GQE batched policy_forward kernel ==="
 ncu \
     --set roofline \
+    ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --export profiles/stage2_gqe_roofline \
     --force-overwrite \
     python3 gqe_batched.py --batch-size "$BATCH" --d-model "$D_MODEL"
