@@ -68,7 +68,7 @@ def layer_norm_fp16(x: cp.ndarray, weight: cp.ndarray, bias: cp.ndarray, eps: fl
 
 def gelu_fp16(x: cp.ndarray) -> cp.ndarray:
     x32 = x.astype(cp.float32)
-    out32 = 0.5 * x32 * (1.0 + cp.tanh(np.sqrt(2.0 / np.pi) * (x32 + 0.044715 * x32**3)))
+    out32 = 0.5 * x32 * (1.0 + cp.tanh(float(np.sqrt(2.0 / np.pi)) * (x32 + 0.044715 * x32**3)))
     return out32.astype(cp.float16)
 
 
@@ -84,7 +84,7 @@ def attention_fp16(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp
 
     # Softmax accumulation in fp32: fp16 has too little dynamic range for
     # exp() of large/negative masked scores without under/overflow.
-    scores = cp.matmul(q, cp.transpose(k, (0, 1, 3, 2))).astype(cp.float32) / np.sqrt(Dh)
+    scores = cp.matmul(q, cp.transpose(k, (0, 1, 3, 2))).astype(cp.float32) / float(np.sqrt(Dh))
     causal_mask = cp.triu(cp.ones((T, T), dtype=cp.bool_), k=1)
     scores = cp.where(causal_mask, cp.float32(-1e9), scores)
     scores = scores - cp.max(scores, axis=-1, keepdims=True)

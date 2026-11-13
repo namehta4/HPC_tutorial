@@ -11,6 +11,11 @@ The GUI's Half chart is excluded from the comparison, matching
 plot_hierarchical_roofline.py's default (see its docstring: in this
 tutorial those counts are compiler register moves, not math).
 
+The Single chart includes packed FP32 (FADD2/FMUL2 x2, FFMA2 x4), as Nsight
+Compute 2026.1 and newer draw it. Nsight Compute 2025.3's chart has no packed
+FP32, so for kernels that use it (cuBLAS SIMT SGEMM on compute capability
+10.x) that GUI shows less than the PNG; the summary line counts them.
+
 Usage: python3 tools/verify_vs_gui.py <report.csv> [...]
 (tools/run_roofline_analysis.sh runs this over every stage's reports.)
 """
@@ -24,9 +29,11 @@ import plot_hierarchical_roofline as phr  # noqa: E402
 
 PC = "smsp__sass_thread_inst_executed_op_{}_pred_on.sum.per_cycle_elapsed"
 DER = "derived__smsp__sass_thread_inst_executed_op_{}"
-CHARTS = {  # GUI chart -> per-cycle achieved-work columns (already weighted), clock
+PACKED = [(PC.format("fadd2"), 2), (PC.format("fmul2"), 2), (PC.format("ffma2"), 4)]
+CHARTS = {  # GUI chart -> per-cycle achieved-work columns (weight 1 unless a pair), clock
     "Double": ([PC.format("dadd"), PC.format("dmul"), DER.format("dfma_pred_on_x2")], "smsp__cycles_elapsed.avg.per_second"),
-    "Single": ([PC.format("fadd"), PC.format("fmul"), DER.format("ffma_pred_on_x2")], "smsp__cycles_elapsed.avg.per_second"),
+    "Single": ([PC.format("fadd"), PC.format("fmul"), DER.format("ffma_pred_on_x2")] + PACKED,
+               "smsp__cycles_elapsed.avg.per_second"),
     "Half": ([DER.format("hadd_pred_on_x2"), DER.format("hmul_pred_on_x2"), DER.format("hfma_pred_on_x4")],
              "smsp__cycles_elapsed.avg.per_second"),
     "Tensor": ([f"sm__ops_path_tensor_src_{s}.sum.per_cycle_elapsed" for s in
@@ -39,13 +46,16 @@ TRAFFIC = {"L1": "derived__l1tex__lsu_writeback_bytes_mem_lg.sum.per_second",
 CEIL_MEM = {"L1": ("derived__l1tex__lsu_writeback_bytes_mem_lg.sum.peak_sustained", "l1tex__cycles_elapsed.avg.per_second"),
             "L2": ("derived__lts__lts2xbar_bytes.sum.peak_sustained", "lts__cycles_elapsed.avg.per_second"),
             "HBM": ("dram__bytes.sum.peak_sustained", "dram__cycles_elapsed.avg.per_second")}
-CEIL_COMP = {"FP64 FMA": "derived__sm__sass_thread_inst_executed_op_dfma_pred_on_x2",
-             "FP32 FMA": "derived__sm__sass_thread_inst_executed_op_ffma_pred_on_x2",
-             "FP16 Tensor": "sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.sum.peak_sustained"}
+CEIL_COMP = {"FP64 FMA": ["derived__sm__sass_thread_inst_executed_op_dfma_pred_on_x2"],
+             "FP32 FMA": ["derived__sm__sass_thread_inst_executed_op_ffma_pred_on_x2"],
+             # dense peak; CC 10.x also exports an un-split peak that includes 2:4 sparsity
+             "FP16 Tensor": ["sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.sum.peak_sustained",
+                             "sm__ops_path_tensor_op_utchmma_src_fp16_dst_fp32_sparsity_off.sum.peak_sustained"]}
 
 
 def rel(a, b):
-    return abs(a - b) / max(abs(a), abs(b), 1e-30)
+    r = abs(a - b) / max(abs(a), abs(b), 1e-30)
+    return r if r == r else float("inf")  # NaN counts as a failure
 
 
 def gui_launches(path):
@@ -53,16 +63,33 @@ def gui_launches(path):
     h, u = rows[0], rows[1]
     col = {n: i for i, n in enumerate(h)}
     sc = {n: phr._unit_scale(u[i]) for n, i in col.items()}
-    g = lambda r, m: phr._to_float(r[col[m]]) * sc[m] if m in col else 0.0
+
+    def name(m):
+        # CC >= 9.0 exports _mem_lgds instead of _mem_lg; CC 10.x exports achieved
+        # tensor work un-split by sparsity. Use whichever the report has.
+        for alt in (m, m.replace("_mem_lg.", "_mem_lgds."), m.replace("_sparsity_off.", ".")):
+            if alt in col:
+                return alt
+        return None
+
+    def g(r, m):
+        m, w = m if isinstance(m, tuple) else (m, 1)
+        m = name(m)
+        return phr._to_float(r[col[m]]) * sc[m] * w if m else 0.0
+
+    def first(r, alts):
+        return next((g(r, a) for a in alts if a in col), 0.0)
+
     data = [r for r in rows[2:] if len(r) == len(h) and r[col["Kernel Name"]]]
     launches = []
     for r in data:
         work = {c: sum(g(r, m) for m in ms) * g(r, clk) for c, (ms, clk) in CHARTS.items()}
         traffic = {lv: g(r, m) for lv, m in TRAFFIC.items()}
-        launches.append((r[col["Kernel Name"]], work, traffic, g(r, "gpu__time_duration.sum")))
+        packed = any(g(r, m) > 0 for m in PACKED)
+        launches.append((r[col["Kernel Name"]], work, traffic, g(r, "gpu__time_duration.sum"), packed))
     sm_clk = "sm__cycles_elapsed.avg.per_second"
     ceil = {lv: statistics.median(g(r, p) * g(r, c) for r in data) / 1e9 for lv, (p, c) in CEIL_MEM.items()}
-    ceil.update({n: statistics.median(g(r, m) * g(r, sm_clk) for r in data) / 1e9 for n, m in CEIL_COMP.items()})
+    ceil.update({n: statistics.median(first(r, alts) * g(r, sm_clk) for r in data) / 1e9 for n, alts in CEIL_COMP.items()})
     return launches, ceil
 
 
@@ -80,7 +107,7 @@ def main():
 
         # Per kernel: aggregate GUI per-launch values the same way (time-weighted)
         # requires durations; single-launch kernels compare 1:1 with no weighting.
-        n_cmp, kerr = 0, 0.0
+        n_cmp, n_packed, kerr = 0, 0, 0.0
         for name, k in kernels.items():
             ls = [l for l in launches if l[0] == name]
             if not ls or k["gflops"] <= 0:
@@ -97,13 +124,15 @@ def main():
                 if traffic[lv] > 0 and k["AI " + lv] > 0:
                     errs.append(rel(plotted / traffic[lv], k["AI " + lv]))
             n_cmp += 1
+            n_packed += any(l[4] for l in ls)
             e = max(errs)
             kerr = max(kerr, e)
             prec = ", ".join(f"{c} {v / 1e9:.3g}" for c, v in work.items() if v > 0)
             print(f"  {phr.short_name(name):<32} x{len(ls):<3} GUI GFLOP/s by chart: [{prec}]  "
                   f"PNG {k['gflops']:.4g} GFLOP/s, AI L1/L2/HBM "
                   + "/".join(f"{k['AI ' + lv]:.3g}" for lv in phr.LEVELS) + f"  max rel diff {e:.1e}")
-        print(f"  kernels compared (all launches): {n_cmp}, max rel diff {kerr:.2e}")
+        print(f"  kernels compared (all launches): {n_cmp}, max rel diff {kerr:.2e}"
+              + (f" ({n_packed} with packed FP32, which the Nsight Compute 2025.3 GUI leaves out)" if n_packed else ""))
         worst = max(worst, kerr)
     print(f"\nOVERALL max relative difference PNG vs GUI: {worst:.2e}")
 

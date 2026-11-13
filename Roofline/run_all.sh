@@ -250,8 +250,18 @@ for s in stage1_naive stage2_gpu_native stage3_memory_opt stage4_compute_opt; do
         STATUS=1
     fi
 done
+# A tiny difference (A100: 8e-4, from ncu's 6-decimal CSV rounding) is normal; ~1 means a
+# metric name changed under the plot script (see CLAUDE.md, "Check the log").
 OVERALL="$(grep "OVERALL" "$LOG" | tail -1)"
-if [ -n "$OVERALL" ]; then ok "PNG vs Nsight Compute GUI: ${OVERALL#*: }"; else warn "no PNG-vs-GUI result in the log"; STATUS=1; fi
+DIFF="${OVERALL##*: }"
+if [ -z "$OVERALL" ]; then
+    warn "no PNG-vs-GUI result in the log"; STATUS=1
+elif awk -v d="$DIFF" 'BEGIN { exit !(d ~ /^[0-9.]+e[-+][0-9]+$/ && d + 0 <= 1e-2) }'; then
+    ok "PNG vs Nsight Compute GUI: max relative difference $DIFF"
+else
+    echo "  [FAIL] PNG vs Nsight Compute GUI: max relative difference $DIFF (expected <= 1e-2; see tools/verify_vs_gui.py's output in the log)"
+    STATUS=1
+fi
 
 echo
 echo "Plots:"

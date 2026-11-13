@@ -65,7 +65,7 @@ def softmax_naive(x: cp.ndarray, axis: int = -1) -> cp.ndarray:
 
 
 def gelu_naive(x: cp.ndarray) -> cp.ndarray:
-    out = 0.5 * x * (1.0 + cp.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * x**3)))
+    out = 0.5 * x * (1.0 + cp.tanh(float(np.sqrt(2.0 / np.pi)) * (x + 0.044715 * x**3)))
     cp.cuda.Stream.null.synchronize()
     return out
 
@@ -82,7 +82,7 @@ def attention_one_sample(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int)
     q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]  # each (T, H, Dh)
     q, k, v = (cp.transpose(t, (1, 0, 2)) for t in (q, k, v))  # (H, T, Dh)
 
-    scores = cp.matmul(q, cp.transpose(k, (0, 2, 1))) / np.sqrt(Dh)  # (H, T, T)
+    scores = cp.matmul(q, cp.transpose(k, (0, 2, 1))) / float(np.sqrt(Dh))  # (H, T, T)
     causal_mask = cp.triu(cp.ones((T, T), dtype=cp.bool_), k=1)
     scores = cp.where(causal_mask, cp.float32(-1e30), scores)
     attn = softmax_naive(scores, axis=-1)

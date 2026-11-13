@@ -46,7 +46,7 @@ def layer_norm_batched(x: cp.ndarray, weight: cp.ndarray, bias: cp.ndarray, eps:
 
 
 def gelu_batched(x: cp.ndarray) -> cp.ndarray:
-    return 0.5 * x * (1.0 + cp.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * x**3)))
+    return 0.5 * x * (1.0 + cp.tanh(float(np.sqrt(2.0 / np.pi)) * (x + 0.044715 * x**3)))
 
 
 def attention_batched(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) -> cp.ndarray:
@@ -60,7 +60,7 @@ def attention_batched(x: cp.ndarray, w: dict, cfg: GQEConfig, layer_idx: int) ->
     q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]  # each (B, T, H, Dh)
     q, k, v = (cp.transpose(t, (0, 2, 1, 3)) for t in (q, k, v))  # (B, H, T, Dh)
 
-    scores = cp.matmul(q, cp.transpose(k, (0, 1, 3, 2))) / np.sqrt(Dh)  # (B, H, T, T), batched GEMM
+    scores = cp.matmul(q, cp.transpose(k, (0, 1, 3, 2))) / float(np.sqrt(Dh))  # (B, H, T, T), batched GEMM
     causal_mask = cp.triu(cp.ones((T, T), dtype=cp.bool_), k=1)
     scores = cp.where(causal_mask, cp.float32(-1e30), scores)
     scores = scores - cp.max(scores, axis=-1, keepdims=True)

@@ -119,8 +119,12 @@ TIME_METRIC = "gpu__time_duration.sum"
 COMPUTE_CEILINGS = {
     "FP64 FMA": (["sm__sass_thread_inst_executed_op_dfma_pred_on.sum.peak_sustained"], 2),
     "FP32 FMA": (["sm__sass_thread_inst_executed_op_ffma_pred_on.sum.peak_sustained"], 2),
-    "FP16 Tensor": (["sm__ops_path_tensor_src_fp16_dst_fp32.sum.peak_sustained",
-                     "sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.sum.peak_sustained"], 1),
+    # Dense peak. The un-split src_fp16_dst_fp32 peak, which compute capability
+    # 10.x exports, includes 2:4 structured sparsity (2x dense); there the dense
+    # peak is under op_utchmma_ (tcgen05). Un-split stays as the last resort.
+    "FP16 Tensor": (["sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.sum.peak_sustained",
+                     "sm__ops_path_tensor_op_utchmma_src_fp16_dst_fp32_sparsity_off.sum.peak_sustained",
+                     "sm__ops_path_tensor_src_fp16_dst_fp32.sum.peak_sustained"], 1),
 }
 # VQE never touches tensor cores (see stage4_compute_opt/kernels/gate_apply_tc.cu);
 # GQE's stage3/4 linear layers are fp16 GEMMs.
