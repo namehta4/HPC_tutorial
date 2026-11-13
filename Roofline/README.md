@@ -150,8 +150,8 @@ are refreshed after every stage with one point triplet per completed stage,
 so the overhead-bound → memory-bound → compute-bound progression builds up
 as you go. `roofline_story_{vqe,gqe}_<n>.png` show the same progression as
 a slide sequence (HBM points only, with speedup arrows). The reference
-versions from an A100 on Perlmutter are in `reference_results/` (files
-tagged `_a100_pm`).
+versions from an A100 on Perlmutter and from a GB300 are in
+`reference_results/` (files tagged `_a100_pm` and `_gb300`).
 
 Two things to know:
 - **Each `profile.sh` takes several minutes**, because ncu replays every
@@ -415,8 +415,8 @@ on the reports it just wrote:
   drawn but only HBM points, identical axes, and arrows labeled with the
   speedup.
 
-Reference copies of all of these from a dedicated A100 run are in
-`reference_results/` (§10).
+Reference copies of all of these from dedicated A100 and GB300 runs are in
+`reference_results/` (§10; files tagged `_a100_pm` and `_gb300`).
 
 The points and ceilings use the same `--set roofline` metrics and formulas
 as the Nsight Compute GUI's "Hierarchical Roofline" charts, so they match
@@ -428,7 +428,10 @@ launches of the same kernel are combined (total FLOPs / total time); the
 GUI draws one chart per precision and one point per launch. Second, the
 GUI's CUDA-core half-precision chart is left out: in this tutorial it only
 counts compiler register moves (see the `plot_hierarchical_roofline.py`
-docstring), not arithmetic.
+docstring), not arithmetic. On compute capability 10.x (GB300), the plots
+also count packed FP32 instructions (FFMA2/FADD2/FMUL2) as Nsight Compute
+2026.1 and newer do; the Nsight Compute 2025.3 GUI leaves them out, so it
+shows less FP32 work for kernels that use them, such as cuBLAS SGEMM.
 
 To re-plot existing reports by hand (works without a GPU):
 
@@ -779,10 +782,11 @@ node, every stage's `profile.sh` run with `QUBITS=12 D_MODEL=128 BATCH=256
 GQE_BATCH=256`. Absolute numbers are hardware-specific, so compare the
 *shape* of your results with these, not the digits. The reference files
 are tagged `_a100_pm`, so your own runs (which write untagged plots under
-`stage*/profiles/` and the repo root) never overwrite them. The raw ncu and
-nsys reports are in `reference_results/profiles/` as zips, so you can open
-them in the Nsight Compute / Nsight Systems GUIs on a laptop without a GPU
-(see `reference_results/README.md`).
+`stage*/profiles/` and the repo root) never overwrite them. A second set
+from a GB300, tagged `_gb300`, is described at the end of this section.
+The raw ncu and nsys reports are in `reference_results/profiles/` as zips,
+so you can open them in the Nsight Compute / Nsight Systems GUIs on a laptop
+without a GPU (see `reference_results/README.md`).
 
 Ceilings under ncu (clocks locked at ~1.1 GHz): HBM ≈1,535 GB/s, L2
 ≈5,300 GB/s, L1 ≈14,900 GB/s, FP64 FMA ≈7.5 TFLOP/s, FP16 tensor
@@ -854,6 +858,85 @@ it.
 ¹ Stage 1's ncu capture is limited to the first 60 launches
 (`--launch-count 60`), so its GPU time isn't comparable.
 
+The A100 GQE stages 1–3 were profiled before the fix that keeps them in
+FP32 under NumPy 2 (`float()` around the `np.sqrt` scalars). Part of each
+forward pass ran in FP64, so the low ends of the stage 1 and 2 GEMM ranges
+above (31 GFLOP/s and 2.1 TFLOP/s) are `gemmSN_TN_kernel<double>` and
+`gemmSN_NN_kernel<double>`. On today's code those stages no longer run
+anything in FP64.
+
+### GB300 reference
+
+Files tagged `_gb300` come from one `./run_all.sh` on a GB300 (compute
+capability 10.3, 152 SMs) with `QUBITS=12 D_MODEL=128 BATCH=4096
+GQE_BATCH=4096 VQE_BATCH=152`. The batches are larger than the A100 run's so
+the work fills the bigger GPU, and stage 4's VQE batch puts one statevector
+on each SM. `reference_results/README.md` lists versions and explains
+the GB300-specific readings.
+
+Ceilings under ncu (SM clock locked at ~1.25–1.35 GHz, against a 2.07 GHz
+maximum, so they vary by a few percent between reports): HBM ≈7,900 GB/s,
+L2 ≈20,300 GB/s, L1 ≈25,000 GB/s, FP64 FMA ≈0.77 TFLOP/s, FP32 FMA ≈49
+TFLOP/s, dense FP16 tensor ≈1,570 TFLOP/s.
+stage0's measured HBM bandwidth was 6,082 GB/s. GB300's FP64 roof is about
+a tenth of the A100's, so its FP64 ridge point is near 0.1 FLOP/byte and
+almost every FP64 kernel in this tutorial is compute-bound.
+
+**VQE** (12 qubits, random 576-term Hamiltonian, depth 3)
+
+| Stage | GPU time | Whole workload |
+|---|---|---|
+| 1 — naive | — ¹ | 17.2 GFLOP/s, HBM AI 1.4³ |
+| 2 — fused (CuPy) | 1,903 µs | 36.4 GFLOP/s, HBM AI 0.08³ |
+| 2 — cuStateVec | 2,077 µs | 12.6 GFLOP/s, HBM AI 2.3 |
+| 3 — shared mem, fp64 | 11,897 µs | 3.0 GFLOP/s, HBM AI 178 |
+| 3 — shared mem, fp32 | 4,185 µs | 9.2 GFLOP/s, HBM AI 287 |
+| 4 — batched grid (152 statevectors) | 12,042 µs | 454 GFLOP/s, HBM AI 251 |
+
+How it differs from the A100:
+- **Stage 3 is slower than stage 2 (6.3x the GPU time).** It removes the
+  HBM traffic (AI 178), but each kernel is one thread block, so it runs on
+  one of the 152 SMs. One SM's share of the FP64 roof is about 5 GFLOP/s,
+  and stage 3 reaches 3.0, about 60% of it. That one-SM roof, not any line
+  on the plot, is what limits it. An A100 SM has about 14x the FP64 rate of
+  a GB300 SM under ncu's locked clocks (16x per clock), so there the same
+  step only left throughput roughly flat.
+- **Stage 4 is the step that pays.** 152 blocks, one statevector each, take
+  the same GPU time as stage 3's single one: 150x the throughput, at 59% of
+  the FP64 FMA roof, compute-bound.
+
+³ On GB300, cuBLAS runs a few of stages 1 and 2's gate applications (a
+2x2 gate times a slice of the statevector) as an FP64 tensor-core GEMM,
+`cutlass_80_tensorop_z884gemm…`, which computes whole tiles: almost all of
+its counted FLOPs multiply padding. It is 71% of stage 1's counted FLOPs
+and 19% of stage 2's. Counting only the other kernels, stage 1 runs at
+about 5.6 GFLOP/s and stage 2 at about 30.
+
+**GQE** (batch 4096, d_model 128, 2 layers)
+
+| Stage | Kernel launches | GPU time | Whole workload |
+|---|---|---|---|
+| 1 — naive | ~520,000¹ | — ¹ | 6.6 GFLOP/s |
+| 2 — batched | 163 | 3,863 µs | 11,742 GFLOP/s² |
+| 3 — fp16, tensor cores | 193 | 2,883 µs | 4,561 GFLOP/s |
+| 4 — fused | **16** | **891 µs** | **12,877 GFLOP/s** |
+
+How to read it:
+- **Stage 1→2:** the per-sample loop becomes batched GEMMs, as on the A100.
+- **Stage 2→3 (1.34x less GPU time, although GFLOP/s falls):** stage 2's
+  GFLOP/s are inflated (²), so compare GPU time here. Tensor cores cut the
+  GEMMs from 44% of stage 2's GPU time to 3% of stage 3's, but the
+  fp16<->fp32 casts they need take 27%, so the net gain is small.
+- **Stage 3→4 (3.2x less GPU time, 2.8x in throughput):** fusion, the same
+  lesson as on the A100.
+
+² On GB300, stage 2's linear layers run as cuBLAS SIMT SGEMMs with packed
+FP32 instructions (FFMA2). They multiply 8-row operands in padded tiles, so
+their counted FLOPs are 4x the useful 2·M·N·K. This is the README's
+earlier warning about counted FLOPs that aren't useful work, on real
+hardware: the story slide's 2→3 arrow shows a drop although stage 3 is
+faster.
+
 ---
 
 ## 11. Troubleshooting
@@ -919,7 +1002,7 @@ stage2_gpu_native/        Fused/batched/streamed CuPy + cuStateVec comparison
 stage3_memory_opt/        Hand-written CUDA kernels, shared memory, mixed precision
 stage4_compute_opt/       Batched/occupancy-tuned VQE kernels, fused WMMA tensor-core GQE kernels
 plot_hierarchical_roofline.py  L1/L2/HBM roofline plots (same numbers as the ncu GUI); run by every profile.sh
-reference_results/        Roofline plots, per-kernel tables and zipped ncu/nsys reports from the A100/Perlmutter reference run (§10; files tagged _a100_pm)
+reference_results/        Roofline plots, per-kernel tables and zipped ncu/nsys reports from the A100/Perlmutter and GB300 reference runs (§10; files tagged _a100_pm and _gb300)
 tools/                    run_roofline_analysis.sh (whole analysis in one go, for instructors),
                           verify_vs_gui.py (checks the PNGs against ncu's GUI formulas), and the
                           one-time H2/LiH Hamiltonian generator (not a runtime dependency)

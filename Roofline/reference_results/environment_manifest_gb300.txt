@@ -1,0 +1,23 @@
+date: 2026-11-13T17:08:43Z
+code: namehta4/HPC_tutorial, branch gb300-reference-results @ 5bad79a (main 1d7cf52 + this PR's fixes)
+sizes: QUBITS=12 D_MODEL=128 BATCH=4096 GQE_BATCH=4096 VQE_BATCH=152
+--- GPU
+name, driver_version, compute_cap, vbios_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA GB300, 580.159.03, 10.3, 97.10.4A.00.1F, 2070 MHz, 3996 MHz, 1400.00 W
+--- toolkit
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+Version 2025.3.1.0 (build 36398880) (public-release)
+NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0
+--- python
+Python 3.12.13
+numpy 2.5.4
+cupy 14.2.0
+scipy 1.18.1
+matplotlib 3.11.2
+pytest 9.1.1
+torch 2.15.0+cu132
+cuquantum 26.9.0
+--- OS
+Linux 6.8.0-1051-nvidia-64k aarch64
+PRETTY_NAME="Ubuntu 24.04.3 LTS"

@@ -44,6 +44,29 @@ which a kernel crosses from memory-bound to compute-bound on this GPU.
 Kernels to its left are memory-bound; kernels to its right are
 compute-bound.
 
+## Reference run: GB300 (2026-11-13)
+
+Dedicated node, GPU idle; sizes and versions in
+`reference_results/environment_manifest_gb300.txt`.
+
+| Metric | Measured | Theoretical |
+|---|---|---|
+| HBM bandwidth (fused FP64 STREAM Triad) | **6,082 GB/s** | ~7,900 GB/s ncu theoretical at its locked clock |
+| FP64 GEMM (cuBLAS) | 1.10 TFLOP/s | FP64 FMA peak ~1.26 TFLOP/s at the 2.07 GHz maximum clock (~0.77 under ncu's locked clock) |
+| FP32 GEMM (cuBLAS, TF32 tensor cores) | 1,102 TFLOP/s | |
+| FP16 GEMM (cuBLAS, tensor cores) | 2,036 TFLOP/s | dense ~2,580 TFLOP/s at 2.07 GHz (~1,570 under ncu) |
+
+Ridge points (peak FLOP/s ÷ HBM bandwidth; the GEMM rows use measured
+numbers, the CUDA-core rows ncu's theoretical peaks at its locked clock, as
+the plots do):
+
+| Precision | Ridge point |
+|---|---|
+| FP64 CUDA-core FMA | ~0.77e12 / 7.9e12 ≈ 0.1 FLOP/byte |
+| FP32 CUDA-core FMA | ~49e12 / 7.9e12 ≈ 6 FLOP/byte |
+| TF32 GEMM (tensor cores) | 1102e12 / 6082e9 ≈ 181 FLOP/byte |
+| FP16 GEMM (tensor cores) | 2036e12 / 6082e9 ≈ 335 FLOP/byte |
+
 ## Sanity checks
 
 - **Bandwidth must come from a single fused kernel.** `a[:] = b + s*c` in
@@ -53,7 +76,9 @@ compute-bound.
 - **FP64 GEMM uses tensor cores on A100.** 18 TFLOP/s is about 2x the
   A100's 9.7 TFLOP/s CUDA-core FP64 peak, so it is not the ceiling for
   elementwise FP64 kernels like VQE's; the roofline plots take that
-  CUDA-core ceiling from ncu.
+  CUDA-core ceiling from ncu. On GB300 the FP64 GEMM reaches about 88% of
+  the CUDA-core FP64 FMA peak at full clock, so FP64 GEMM gets no
+  tensor-core speedup there.
 - **TF32 should be ~8x FP64 CUDA-core speed.** If your FP32/TF32 number is
   close to your FP64 number, cuBLAS isn't in tensor-op math mode.
   `gemm_peak_probe.py` sets `CUBLAS_TENSOR_OP_MATH` explicitly, because
