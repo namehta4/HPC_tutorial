@@ -880,11 +880,11 @@ the work fills the bigger GPU, and stage 4's VQE batch puts one statevector
 on each SM. `reference_results/README.md` lists versions and explains
 the GB300-specific readings.
 
-Ceilings under ncu (SM clock locked at ~1.25–1.35 GHz, against a 2.07 GHz
+Ceilings under ncu (SM clock locked at ~1.25–1.3 GHz, against a 2.07 GHz
 maximum, so they vary by a few percent between reports): HBM ≈7,900 GB/s,
-L2 ≈20,300 GB/s, L1 ≈25,000 GB/s, FP64 FMA ≈0.77 TFLOP/s, FP32 FMA ≈49
+L2 ≈20,500 GB/s, L1 ≈24,600 GB/s, FP64 FMA ≈0.77 TFLOP/s, FP32 FMA ≈49
 TFLOP/s, dense FP16 tensor ≈1,570 TFLOP/s.
-stage0's measured HBM bandwidth was 6,082 GB/s. GB300's FP64 roof is about
+stage0's measured HBM bandwidth was 6,063 GB/s. GB300's FP64 roof is about
 a tenth of the A100's, so its FP64 ridge point is near 0.1 FLOP/byte and
 almost every FP64 kernel in this tutorial is compute-bound.
 
@@ -892,23 +892,23 @@ almost every FP64 kernel in this tutorial is compute-bound.
 
 | Stage | GPU time | Whole workload |
 |---|---|---|
-| 1 — naive | — ¹ | 17.2 GFLOP/s, HBM AI 1.4³ |
-| 2 — fused (CuPy) | 1,903 µs | 36.4 GFLOP/s, HBM AI 0.08³ |
-| 2 — cuStateVec | 2,077 µs | 12.6 GFLOP/s, HBM AI 2.3 |
-| 3 — shared mem, fp64 | 11,897 µs | 3.0 GFLOP/s, HBM AI 178 |
-| 3 — shared mem, fp32 | 4,185 µs | 9.2 GFLOP/s, HBM AI 287 |
-| 4 — batched grid (152 statevectors) | 12,042 µs | 454 GFLOP/s, HBM AI 251 |
+| 1 — naive | — ¹ | 16.8 GFLOP/s, HBM AI 1.4³ |
+| 2 — fused (CuPy) | 1,950 µs | 35.5 GFLOP/s, HBM AI 0.08³ |
+| 2 — cuStateVec | 2,170 µs | 12.1 GFLOP/s, HBM AI 2.3 |
+| 3 — shared mem, fp64 | 11,907 µs | 3.0 GFLOP/s, HBM AI 179 |
+| 3 — shared mem, fp32 | 4,183 µs | 9.2 GFLOP/s, HBM AI 294 |
+| 4 — batched grid (152 statevectors) | 11,927 µs | 459 GFLOP/s, HBM AI 251 |
 
 How it differs from the A100:
-- **Stage 3 is slower than stage 2 (6.3x the GPU time).** It removes the
-  HBM traffic (AI 178), but each kernel is one thread block, so it runs on
+- **Stage 3 is slower than stage 2 (6.1x the GPU time).** It removes the
+  HBM traffic (AI 179), but each kernel is one thread block, so it runs on
   one of the 152 SMs. One SM's share of the FP64 roof is about 5 GFLOP/s,
   and stage 3 reaches 3.0, about 60% of it. That one-SM roof, not any line
   on the plot, is what limits it. An A100 SM has about 14x the FP64 rate of
   a GB300 SM under ncu's locked clocks (16x per clock), so there the same
   step only left throughput roughly flat.
 - **Stage 4 is the step that pays.** 152 blocks, one statevector each, take
-  the same GPU time as stage 3's single one: 150x the throughput, at 59% of
+  the same GPU time as stage 3's single one: 152x the throughput, at 60% of
   the FP64 FMA roof, compute-bound.
 
 ³ On GB300, cuBLAS runs a few of stages 1 and 2's gate applications (a
@@ -916,24 +916,24 @@ How it differs from the A100:
 `cutlass_80_tensorop_z884gemm…`, which computes whole tiles: almost all of
 its counted FLOPs multiply padding. It is 71% of stage 1's counted FLOPs
 and 19% of stage 2's. Counting only the other kernels, stage 1 runs at
-about 5.6 GFLOP/s and stage 2 at about 30.
+about 5.4 GFLOP/s and stage 2 at about 30.
 
 **GQE** (batch 4096, d_model 128, 2 layers)
 
 | Stage | Kernel launches | GPU time | Whole workload |
 |---|---|---|---|
-| 1 — naive | ~520,000¹ | — ¹ | 6.6 GFLOP/s |
-| 2 — batched | 163 | 3,863 µs | 11,742 GFLOP/s² |
-| 3 — fp16, tensor cores | 193 | 2,883 µs | 4,561 GFLOP/s |
-| 4 — fused | **16** | **891 µs** | **12,877 GFLOP/s** |
+| 1 — naive | ~520,000¹ | — ¹ | 6.5 GFLOP/s |
+| 2 — batched | 163 | 3,857 µs | 11,759 GFLOP/s² |
+| 3 — fp16, tensor cores | 193 | 2,883 µs | 4,560 GFLOP/s |
+| 4 — fused | **16** | **887 µs** | **12,941 GFLOP/s** |
 
 How to read it:
 - **Stage 1→2:** the per-sample loop becomes batched GEMMs, as on the A100.
 - **Stage 2→3 (1.34x less GPU time, although GFLOP/s falls):** stage 2's
   GFLOP/s are inflated (²), so compare GPU time here. Tensor cores cut the
-  GEMMs from 44% of stage 2's GPU time to 3% of stage 3's, but the
-  fp16<->fp32 casts they need take 27%, so the net gain is small.
-- **Stage 3→4 (3.2x less GPU time, 2.8x in throughput):** fusion, the same
+  linear-layer GEMMs from 41% of stage 2's GPU time to 3% of stage 3's, but
+  the fp16<->fp32 casts they need take 27%, so the net gain is small.
+- **Stage 3→4 (3.3x less GPU time, 2.8x in throughput):** fusion, the same
   lesson as on the A100.
 
 ² On GB300, stage 2's linear layers run as cuBLAS SIMT SGEMMs with packed
