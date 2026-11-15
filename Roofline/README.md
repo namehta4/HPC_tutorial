@@ -142,7 +142,13 @@ After each stage's `profile.sh`, look at:
   point per level. The table printed at the end of `profile.sh` (also
   `<report>_kernels.csv`) has the numbers.
 - `profiles/*.ncu-rep` in the Nsight Compute GUI (optional): its
-  hierarchical roofline charts show the same numbers as the PNGs.
+  hierarchical roofline charts show the same numbers as the PNGs, and its
+  other sections (memory and compute workload analysis, occupancy, warp
+  state) show why each kernel lands where it does. Its Source page shows
+  per-instruction counts and warp-stall samples; for stage3/4's
+  hand-written kernels (built with `-lineinfo`) it lines them up with the
+  CUDA source, which the report carries (`--import-source yes`), so it
+  works on a laptop without the repo.
 - That stage's `NOTES.md`: the diagnosis, and the fix the next stage applies.
 
 The repo-root `roofline_hierarchical_vqe.png` / `roofline_hierarchical_gqe.png`
@@ -665,9 +671,9 @@ already ran §2/§3's environment setup **before** the session starts. Skip
 this section if you're working through the tutorial at your own pace — use
 §6 instead.
 
-**Why this cheat sheet skips the full `ncu --set roofline` capture in each
-stage's `profile.sh`:** a single `ncu --set roofline` run takes 60–150
-seconds (multi-pass hardware counter collection), and each stage's
+**Why this cheat sheet skips the `ncu --set full` capture in each stage's
+`profile.sh`:** a single ncu run takes minutes (it replays every kernel
+dozens of times to collect all the hardware counters), and each stage's
 `profile.sh` runs 2–4 of them. Doing that live for all four stages would
 consume the entire 45 minutes on progress bars. Instead, this path uses
 `nsys stats --report cuda_gpu_kern_sum` — seconds, not minutes — to make the

@@ -40,10 +40,19 @@ nsys profile \
 
 echo
 echo "=== Nsight Compute roofline: VQE fused gate-application + expval kernels ==="
+# --set full collects every Nsight Compute section: speed of light, the
+# hierarchical L1/L2/HBM roofline charts the plots are built from, memory and
+# compute workload analysis, occupancy, launch, scheduler and warp-state
+# statistics, and per-instruction source counters for the Source page.
+# This stage's kernels come from CuPy, cuBLAS and cuStateVec, which carry no
+# line info, so the Source page shows SASS only; --import-source yes is kept
+# so every stage's reports are captured the same way (stage3's VQE runs and
+# both stage4 runs embed their .cu sources).
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage2_vqe_fused_roofline \
+    --export profiles/stage2_vqe_fused_roofline.ncu-rep \
     --force-overwrite \
     python3 vqe_fused.py "${VQE_SIZE[@]}" --depth "$DEPTH"
 
@@ -58,9 +67,10 @@ nsys profile \
 echo
 echo "=== Nsight Compute roofline: VQE cuStateVec kernels ==="
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage2_vqe_custatevec_roofline \
+    --export profiles/stage2_vqe_custatevec_roofline.ncu-rep \
     --force-overwrite \
     python3 vqe_custatevec.py "${VQE_SIZE[@]}" --depth "$DEPTH"
 
@@ -75,9 +85,10 @@ nsys profile \
 echo
 echo "=== Nsight Compute roofline: GQE batched policy_forward kernel ==="
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage2_gqe_roofline \
+    --export profiles/stage2_gqe_roofline.ncu-rep \
     --force-overwrite \
     python3 gqe_batched.py --batch-size "$BATCH" --d-model "$D_MODEL"
 

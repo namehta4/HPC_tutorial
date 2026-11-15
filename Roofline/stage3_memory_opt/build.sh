@@ -14,11 +14,13 @@ cd "$SCRIPT_DIR"
 
 ARCH="${CUDA_ARCH:-sm_80}"
 
+# -lineinfo records which .cu line each SASS instruction came from, for
+# Nsight Compute's Source page; it doesn't change the generated code.
 echo "Compiling kernels for -arch=$ARCH ..."
-nvcc -arch="$ARCH" -O3 --use_fast_math -cubin kernels/gate_apply.cu -o kernels/gate_apply.cubin
-nvcc -arch="$ARCH" -O3 --use_fast_math -cubin kernels/expval_reduce.cu -o kernels/expval_reduce.cubin
-nvcc -arch="$ARCH" -O3 --use_fast_math -cubin kernels/gate_apply_fp32.cu -o kernels/gate_apply_fp32.cubin
-nvcc -arch="$ARCH" -O3 --use_fast_math -cubin kernels/expval_reduce_fp32.cu -o kernels/expval_reduce_fp32.cubin
+nvcc -arch="$ARCH" -O3 -lineinfo --use_fast_math -cubin kernels/gate_apply.cu -o kernels/gate_apply.cubin
+nvcc -arch="$ARCH" -O3 -lineinfo --use_fast_math -cubin kernels/expval_reduce.cu -o kernels/expval_reduce.cubin
+nvcc -arch="$ARCH" -O3 -lineinfo --use_fast_math -cubin kernels/gate_apply_fp32.cu -o kernels/gate_apply_fp32.cubin
+nvcc -arch="$ARCH" -O3 -lineinfo --use_fast_math -cubin kernels/expval_reduce_fp32.cu -o kernels/expval_reduce_fp32.cubin
 
 echo "Built:"
 ls -la kernels/*.cubin

@@ -105,12 +105,20 @@ QUBITS=12 D_MODEL=128 BATCH=256 GQE_BATCH=256 ./profile.sh
 formulas of ncu's `SpeedOfLight_Hierarchical*RooflineChart.section` files
 (L1 = `l1tex__lsu_writeback_active_mem_lg` ×128, L2 =
 `lts__lts2xbar_cycles_active` ×32, HBM = `dram__bytes`, ceilings =
-`peak_sustained` × clock), all already in `--set roofline`, so its PNGs
-match the ncu GUI. Keep it that way, and don't swap in `lts__t_bytes` /
-`l1tex__t_bytes`. If you add an ncu run to a `profile.sh`, list the report
-in that script's final `plot_hierarchical_roofline.py` call. Tensor FLOPs
+`peak_sustained` × clock), all collected by `--set roofline` and by the
+`--set full` that every `profile.sh` uses, so its PNGs match the ncu GUI.
+Keep it that way, and don't swap in `lts__t_bytes` / `l1tex__t_bytes`.
+`--set full` adds the sections that explain a stage's point (memory and
+compute workload analysis, occupancy, launch, scheduler and warp-state
+stats, source counters), at roughly 2.4x the passes and 1.4x the report
+size of `--set roofline`. If you add an ncu run to a `profile.sh`, list the
+report in that script's final `plot_hierarchical_roofline.py` call, and give
+it the same `--set full --import-source yes` and an explicit `.ncu-rep` in
+`--export` (ncu 2026.4+ otherwise writes `.ncu-repz`). Keep
+`-lineinfo` on every `nvcc` line in `build.sh`: it lets the Source page map
+SASS to CUDA lines and doesn't change the SASS. Tensor FLOPs
 come from `sm__ops_path_tensor_*`, which already counts FLOPs (verified
-against 2·M·N·K for the GQE GEMMs). In `--set roofline`
+against 2·M·N·K for the GQE GEMMs). In the raw CSV
 exports, `derived__sm__*_pred_on_x2` columns are peak rates (the same for
 every kernel). The achieved rates are `derived__smsp__*` /
 `smsp__*.per_cycle_elapsed`. CUDA-core half-precision counts (the GUI's

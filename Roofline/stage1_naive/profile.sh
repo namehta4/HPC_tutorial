@@ -63,15 +63,23 @@ nsys profile \
 
 echo
 echo "=== Nsight Compute roofline: VQE naive gate-application + expval kernels ==="
-# --set roofline captures the metrics needed for the roofline chart;
 # --launch-count limits how many kernel launches we capture detail for,
 # since stage1 launches MANY tiny kernels (one per gate) and a full-detail
 # capture of every single one would be extremely slow.
+# --set full collects every Nsight Compute section: speed of light, the
+# hierarchical L1/L2/HBM roofline charts the plots are built from, memory and
+# compute workload analysis, occupancy, launch, scheduler and warp-state
+# statistics, and per-instruction source counters for the Source page.
+# This stage's kernels come from CuPy and cuBLAS, which carry no line info,
+# so the Source page shows SASS only; --import-source yes is kept so every
+# stage's reports are captured the same way (stage3's VQE runs and both
+# stage4 runs embed their .cu sources).
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --launch-count 60 \
-    --export profiles/stage1_vqe_roofline \
+    --export profiles/stage1_vqe_roofline.ncu-rep \
     --force-overwrite \
     python3 vqe_naive.py "${VQE_SIZE[@]}" --depth "$DEPTH"
 
@@ -86,10 +94,11 @@ nsys profile \
 echo
 echo "=== Nsight Compute roofline: GQE naive policy_forward kernel ==="
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
     --launch-count 60 \
-    --export profiles/stage1_gqe_roofline \
+    --export profiles/stage1_gqe_roofline.ncu-rep \
     --force-overwrite \
     python3 gqe_naive.py --batch-size "$BATCH" --d-model "$D_MODEL"
 

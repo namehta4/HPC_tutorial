@@ -48,10 +48,18 @@ nsys profile \
 
 echo
 echo "=== Nsight Compute roofline: VQE batched gate-application + expval kernels ==="
+# --set full collects every Nsight Compute section: speed of light, the
+# hierarchical L1/L2/HBM roofline charts the plots are built from, memory and
+# compute workload analysis, occupancy, launch, scheduler and warp-state
+# statistics, and per-instruction source counters for the Source page.
+# build.sh compiles the kernels with -lineinfo, and --import-source yes stores
+# their .cu files in the report, so the Source page lines up CUDA source with
+# SASS on any machine that opens it.
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage4_vqe_roofline \
+    --export profiles/stage4_vqe_roofline.ncu-rep \
     --force-overwrite \
     python3 vqe_compute_opt.py "${VQE_SIZE[@]}" --depth "$DEPTH" --batch-size "$VQE_BATCH"
 
@@ -66,9 +74,10 @@ nsys profile \
 echo
 echo "=== Nsight Compute roofline: GQE tensor-core policy_forward kernel ==="
 ncu \
-    --set roofline \
+    --set full \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage4_gqe_tc_roofline \
+    --export profiles/stage4_gqe_tc_roofline.ncu-rep \
     --force-overwrite \
     python3 gqe_multistream.py --batch-size "$GQE_BATCH" --d-model "$D_MODEL"
 

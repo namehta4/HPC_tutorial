@@ -54,7 +54,7 @@ Run `./profile.sh` and open `profiles/stage1_vqe_timeline.nsys-rep` (or run
 
 ## What the Nsight Compute roofline plot is expected to show
 
-Run the `ncu --set roofline` command in `profile.sh` and open
+Run the `ncu` command in `profile.sh` and open
 `profiles/stage1_vqe_roofline.ncu-rep`. Expect:
 
 - The gate-application kernel and the Pauli-matvec kernel to land **far
