@@ -46,7 +46,7 @@ hand, clone the repo on a **dedicated GPU node** and run:
 ```bash
 git clone https://github.com/namehta4/HPC_tutorial.git && cd HPC_tutorial/Roofline
 ./run_all.sh --check   # seconds: sets up Python, then checks GPU, tools, counter access
-./run_all.sh           # 45-75 min on an A100: calibration, all stages, plots, summary
+./run_all.sh           # ~1 h on a GB300, 2-4 h on an A100: calibration, all stages, plots, summary
 ```
 
 `run_all.sh` uses a Python that already has the dependencies (on
@@ -76,7 +76,7 @@ pip install --user cupy-cuda13x cuquantum-python-cu13 qutip pytest
 
 # Get a dedicated GPU node (timings on shared login-node GPUs are meaningless, §5),
 # then load the module again there.
-salloc -N 1 -C gpu -G 1 -q interactive -t 01:30:00 -A <your_NERSC_project>
+salloc -N 1 -C gpu -G 1 -q interactive -t 04:00:00 -A <your_NERSC_project>
 module load pytorch/2.13.0
 ```
 
@@ -160,9 +160,12 @@ versions from an A100 on Perlmutter and from a GB300 are in
 `reference_results/` (files tagged `_a100_pm` and `_gb300`).
 
 Two things to know:
-- **Each `profile.sh` takes several minutes**, because ncu replays every
-  kernel many times. In the 45-minute live format (§9), run the scripts
-  directly and look at pre-generated plots; run `profile.sh` afterwards.
+- **Each `profile.sh` takes several minutes to half an hour**, because ncu
+  replays every kernel about 40 times to collect `--set full`.
+  `NCU_SET=roofline ./profile.sh` collects only the roofline sections, in
+  about a third of the time. In the 45-minute live format (§9), run the
+  scripts directly and look at pre-generated plots; run `profile.sh`
+  afterwards.
 - **Use the `QUBITS=12 ...` sizes.** At the default H2 size, every stage's
   points land in the same corner of the plot (see the note at the top of §6).
 

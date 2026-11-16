@@ -110,10 +110,11 @@ formulas of ncu's `SpeedOfLight_Hierarchical*RooflineChart.section` files
 Keep it that way, and don't swap in `lts__t_bytes` / `l1tex__t_bytes`.
 `--set full` adds the sections that explain a stage's point (memory and
 compute workload analysis, occupancy, launch, scheduler and warp-state
-stats, source counters), at roughly 2.4x the passes and 1.4x the report
-size of `--set roofline`. If you add an ncu run to a `profile.sh`, list the
+stats, source counters), at about 2.5x the passes per kernel (16 -> 41 on
+GB300), 3x the profiling time and 1.5x the report size of `--set roofline`;
+`NCU_SET=roofline` switches back. If you add an ncu run to a `profile.sh`, list the
 report in that script's final `plot_hierarchical_roofline.py` call, and give
-it the same `--set full --import-source yes` and an explicit `.ncu-rep` in
+it the same `--set "${NCU_SET:-full}" --import-source yes` and an explicit `.ncu-rep` in
 `--export` (ncu 2026.4+ otherwise writes `.ncu-repz`). Keep
 `-lineinfo` on every `nvcc` line in `build.sh`: it lets the Source page map
 SASS to CUDA lines and doesn't change the SASS. Tensor FLOPs
@@ -156,8 +157,10 @@ login-node and idle-GPU checks to warnings.
 
 1. **Get a dedicated, idle GPU.** Timing and counter numbers on a shared
    GPU are meaningless. Check `nvidia-smi` shows ~0% utilization before
-   starting. The run takes roughly 45–75 min on an A100.
-   - Perlmutter: `salloc -N 1 -C gpu -G 1 -q interactive -A <project> -t 01:30:00`.
+   starting. With `--set full` the run takes about 1 h on a GB300 and,
+   by the same 3x, roughly 2–4 h on an A100 (its `--set roofline` runs took
+   45–75 min; `NCU_SET=roofline` gives that back).
+   - Perlmutter: `salloc -N 1 -C gpu -G 1 -q interactive -A <project> -t 04:00:00`.
      The interactive QOS usually starts within minutes. `-q debug` (30 min
      cap) is too short for all four stages in one job, and was backed up
      for a long time on 2026-10-22.
@@ -192,8 +195,9 @@ login-node and idle-GPU checks to warnings.
      `_a100_pm` for A100/Perlmutter), and update README §10's tables.
      Also zip every `stage*/profiles/*.{ncu,nsys}-rep` into
      `reference_results/profiles/<name>_<tag>.<ext>.zip` (tag the file
-     inside too). Zipped, they total ~59 MB; raw, they're 677 MB, with
-     several ncu reports over GitHub's 100 MB file limit.
+     inside too). Zipped, the A100 set (`--set roofline`) totals ~59 MB
+     and the GB300 set (`--set full`) ~112 MB; raw, they're 677 MB and
+     1.1 GB, with several ncu reports over GitHub's 100 MB file limit.
 5. **Check the log:** each stage's tests passed; the `profile.sh exit` lines
    are 0; and the final `OVERALL max relative difference PNG vs GUI` is
    tiny (~1e-6). Differences up to ~1e-3 appear only on near-zero-FLOP

@@ -41,7 +41,7 @@ relative difference of 1.1e-04 between the plots and Nsight Compute's
 roofline-chart formulas as of version 2026.1, which count packed FP32. These
 reports carry Nsight Compute 2025.3's charts, which don't (see *Packed FP32
 and padding* below). The ncu reports were captured with `--set full`, so
-besides the roofline charts they have every Nsight Compute section, and
+besides the roofline charts they have the rest of that section set, and
 those with hand-written kernels (stage3's VQE reports and both stage4
 reports) carry the kernels' CUDA source (see *Opening the raw reports*).
 `environment_manifest_gb300.txt` lists every version.
