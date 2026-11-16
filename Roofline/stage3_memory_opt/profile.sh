@@ -46,10 +46,19 @@ nsys profile \
 
 echo
 echo "=== Nsight Compute roofline: VQE memory-optimized fp64 kernels ==="
+# --set full collects Nsight Compute's full section set: speed of light, the
+# hierarchical L1/L2/HBM roofline charts the plots are built from, memory and
+# compute workload analysis, occupancy, launch, scheduler and warp-state
+# statistics, and per-instruction source counters for the Source page. It
+# takes about 3x as long as --set roofline, which NCU_SET=roofline selects.
+# build.sh compiles the kernels with -lineinfo, and --import-source yes stores
+# their .cu files in the report, so the Source page lines up CUDA source with
+# SASS on any machine that opens it.
 ncu \
-    --set roofline \
+    --set "${NCU_SET:-full}" \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage3_vqe_fp64_roofline \
+    --export profiles/stage3_vqe_fp64_roofline.ncu-rep \
     --force-overwrite \
     python3 vqe_memopt.py "${VQE_SIZE[@]}" --depth "$DEPTH" --precision fp64
 
@@ -64,9 +73,10 @@ nsys profile \
 echo
 echo "=== Nsight Compute roofline: VQE memory-optimized fp32 kernels ==="
 ncu \
-    --set roofline \
+    --set "${NCU_SET:-full}" \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage3_vqe_fp32_roofline \
+    --export profiles/stage3_vqe_fp32_roofline.ncu-rep \
     --force-overwrite \
     python3 vqe_memopt.py "${VQE_SIZE[@]}" --depth "$DEPTH" --precision fp32
 
@@ -80,10 +90,13 @@ nsys profile \
 
 echo
 echo "=== Nsight Compute roofline: GQE fp16 policy_forward kernel ==="
+# gqe_batched_fp16.py runs only CuPy and cuBLAS kernels (no .cu files of
+# ours), so this report's Source page shows SASS only.
 ncu \
-    --set roofline \
+    --set "${NCU_SET:-full}" \
+    --import-source yes \
     ${NCU_PACKED_FP32[@]+"${NCU_PACKED_FP32[@]}"} \
-    --export profiles/stage3_gqe_fp16_roofline \
+    --export profiles/stage3_gqe_fp16_roofline.ncu-rep \
     --force-overwrite \
     python3 gqe_batched_fp16.py --batch-size "$BATCH" --d-model "$D_MODEL"
 

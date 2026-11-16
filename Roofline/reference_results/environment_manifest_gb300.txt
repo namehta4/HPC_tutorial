@@ -1,5 +1,5 @@
-date: 2026-11-13T17:08:43Z
-code: namehta4/HPC_tutorial, branch gb300-reference-results @ 5bad79a (main 1d7cf52 + this PR's fixes)
+date: 2026-11-15T22:37:22Z
+code: namehta4/HPC_tutorial, branch ncu-source-view @ ba3f4d3 (main f6b5fd6 + full ncu sections and CUDA source)
 sizes: QUBITS=12 D_MODEL=128 BATCH=4096 GQE_BATCH=4096 VQE_BATCH=152
 --- GPU
 name, driver_version, compute_cap, vbios_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]

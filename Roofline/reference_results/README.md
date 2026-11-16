@@ -26,7 +26,7 @@ on an A100 today, those stages would show
 FP32 kernels with different FLOP/s and GPU time.
 
 **How the GB300 set was made:** one NVIDIA GB300 GPU (compute capability
-10.3, 152 SMs) on a dedicated, idle node (2026-11-13; driver 580.159.03,
+10.3, 152 SMs) on a dedicated, idle node (2026-11-15; driver 580.159.03,
 CUDA 13.0, Nsight Compute 2025.3.1, Nsight Systems 2025.3.2). One
 `./run_all.sh` from a clean checkout, with
 
@@ -37,10 +37,14 @@ QUBITS=12 D_MODEL=128 BATCH=4096 GQE_BATCH=4096 VQE_BATCH=152 ./run_all.sh
 The batches are larger than the A100 run's so the work fills the bigger
 GPU, and `VQE_BATCH=152` gives stage 4 one statevector per SM. All
 correctness tests passed, and `tools/verify_vs_gui.py` found a largest
-relative difference of 6.7e-05 between the plots and Nsight Compute's
+relative difference of 1.1e-04 between the plots and Nsight Compute's
 roofline-chart formulas as of version 2026.1, which count packed FP32. These
 reports carry Nsight Compute 2025.3's charts, which don't (see *Packed FP32
-and padding* below). `environment_manifest_gb300.txt` lists every version.
+and padding* below). The ncu reports were captured with `--set full`, so
+besides the roofline charts they have the rest of that section set, and
+those with hand-written kernels (stage3's VQE reports and both stage4
+reports) carry the kernels' CUDA source (see *Opening the raw reports*).
+`environment_manifest_gb300.txt` lists every version.
 
 Every file name ends in its system tag, so it can't be mistaken for, or
 replaced by, the untagged plots `profile.sh` writes when you run the
@@ -61,7 +65,7 @@ The GB300 set has the same files with `_gb300` in place of `_a100_pm`.
 ## Reading the GB300 set
 
 - **Clock.** Nsight Compute locks the clocks while it profiles. On GB300
-  the SM clock it reports is about 1.25–1.35 GHz, against a 2.07 GHz
+  the SM clock it reports is about 1.25–1.3 GHz, against a 2.07 GHz
   maximum, so the ceilings in the plots vary by a few percent between
   reports. The FP64 CUDA-core roof is about 0.77 TFLOP/s under ncu, and
   about 1.26 TFLOP/s at full clock.
@@ -89,15 +93,27 @@ The GB300 set has the same files with `_gb300` in place of `_a100_pm`.
 
 ## Opening the raw reports
 
-The reports are zipped because ncu reports compress ~10-150x (the largest
-is 191 MB unzipped, 13 MB zipped), which keeps them under GitHub's file
+The reports are zipped because ncu reports compress ~7-17x (the largest
+is 272 MB unzipped, 23 MB zipped), which keeps them under GitHub's file
 size limit. You don't need a GPU to look at them: download a zip, extract
 it, and open the file in the free desktop GUIs on any laptop (Windows,
 macOS or Linux):
 
-- `*.ncu-rep` → **Nsight Compute** (File → Open). The *Details* page has
-  the Speed Of Light and hierarchical roofline charts; pick a kernel from
-  the *Result* dropdown at the top.
+- `*.ncu-rep` → **Nsight Compute** (File → Open). Pick a kernel from the
+  *Result* drop-down at the top of the *Details* page. The roofline charts
+  are inside the *GPU Speed Of Light Throughput* section, behind a small
+  drop-down that switches between the overview chart and the hierarchical
+  double, single, half and tensor-core charts (L1, L2 and DRAM points).
+  The GB300 reports, captured with `--set full`, also have Memory and
+  Compute Workload Analysis, Launch Statistics, Occupancy, Scheduler and
+  Warp State Statistics and Source Counters, so you can see why a kernel
+  sits where it does, e.g. the one-block grid behind VQE stage 3. *Add
+  Baseline* compares two kernels section by section. The *Source* page
+  shows per-instruction counts and warp-stall samples; for the
+  hand-written kernels it lines them up with the CUDA source, which these
+  reports carry inside them. CuPy and NVIDIA library kernels show SASS
+  only, as does everything in the A100 reports, which have the roofline
+  sections only.
 - `*.nsys-rep` → **Nsight Systems** (File → Open). The timeline shows the
   per-gate launches and host syncs that dominate stage1, and how stage2+
   remove them.

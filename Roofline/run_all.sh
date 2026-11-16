@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command from a fresh clone to roofline plots on this machine's GPU:
 #
-#   ./run_all.sh              # setup + preflight checks + full analysis (~45-75 min on an A100)
+#   ./run_all.sh              # setup + preflight checks + full analysis (~1 h on a GB300, 2-4 h on an A100)
 #   ./run_all.sh --check      # setup + preflight checks only (seconds; safe on a login node)
 #   ./run_all.sh --force      # skip the idle-GPU / dedicated-allocation checks (numbers may be garbage)
 #
@@ -20,20 +20,22 @@
 #      and where the plots are.
 #
 # Two things it can't do for you: get the GPU (on Perlmutter,
-#   salloc -N 1 -C gpu -G 1 -q interactive -t 01:30:00 -A <project>
+#   salloc -N 1 -C gpu -G 1 -q interactive -t 04:00:00 -A <project>
 # ) and grant performance-counter access on a locked-down workstation (an
 # admin must set NVreg_RestrictProfilingToAdminUsers=0; see ENV_SETUP.md §4).
 #
-# Environment overrides: QUBITS D_MODEL BATCH GQE_BATCH CUDA_ARCH (passed to
-# the analysis), PYTHON (interpreter to use), VENV (default ./.venv),
+# Environment overrides: QUBITS D_MODEL BATCH GQE_BATCH CUDA_ARCH NCU_SET
+# (passed to the analysis; NCU_SET=roofline profiles about 3x faster than the
+# default full set), PYTHON (interpreter to use), VENV (default ./.venv),
 # PERLMUTTER_PYTORCH_MODULE (default pytorch/2.13.0).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="${VENV:-$REPO/.venv}"
 PERLMUTTER_PYTORCH_MODULE="${PERLMUTTER_PYTORCH_MODULE:-pytorch/2.13.0}"
-MIN_FREE_GB=2          # ~700 MB of reports + CSVs + plots, with headroom
-MIN_SLURM_MINUTES=80   # the full run takes 45-75 min on an A100
+MIN_FREE_GB=3          # ~1.2 GB of reports + CSVs + plots with --set full, with headroom
+# --set full: ~1 h on a GB300, roughly 2-4 h on an A100; NCU_SET=roofline: ~1/3 of that
+if [ "${NCU_SET:-full}" = roofline ]; then MIN_SLURM_MINUTES=80; else MIN_SLURM_MINUTES=150; fi
 
 MODE=run
 FORCE=0
@@ -167,7 +169,7 @@ ok "GPU $GPU_INDEX: $GPU_NAME (compute capability $COMPUTE_CAP -> CUDA_ARCH=$CUD
 # Login nodes share their GPU and hold its counters, so profiling there is impossible or meaningless.
 if [ "${NERSC_HOST:-}" = perlmutter ] && [[ "$(hostname)" == login* ]]; then
     fail_unless_forced "this is a Perlmutter login node ($(hostname))" \
-        "get a compute node first: salloc -N 1 -C gpu -G 1 -q interactive -t 01:30:00 -A <project>, then re-run."
+        "get a compute node first: salloc -N 1 -C gpu -G 1 -q interactive -t 04:00:00 -A <project>, then re-run."
 elif command -v sbatch &>/dev/null && [ -z "${SLURM_JOB_ID:-}" ]; then
     fail_unless_forced "Slurm is installed but this shell isn't inside a job (likely a login node)" \
         "allocate a dedicated GPU node with salloc and re-run inside it."
@@ -191,7 +193,7 @@ if [ -n "${SLURM_JOB_ID:-}" ] && command -v squeue &>/dev/null; then
     MINUTES="$(echo "$LEFT" | awk -F'[-:]' '/UNLIMITED/ {print 99999; exit}
         NF==4 {print $1*1440+$2*60+$3} NF==3 {print $1*60+$2} NF==2 {print $1}')"
     if [ -n "$MINUTES" ] && [ "$MINUTES" -lt "$MIN_SLURM_MINUTES" ]; then
-        warn "only $LEFT left in Slurm job $SLURM_JOB_ID; the full run takes 45-75 min on an A100, so later stages may be cut off"
+        warn "only $LEFT left in Slurm job $SLURM_JOB_ID; a full run takes ~1 h on a GB300 and 2-4 h on an A100 (NCU_SET=roofline: ~1/3 of that), so later stages may be cut off"
     elif [ -n "$MINUTES" ]; then
         ok "$LEFT left in Slurm job $SLURM_JOB_ID"
     fi
@@ -233,7 +235,7 @@ fi
 # --- 3. Full analysis -----------------------------------------------------------
 
 LOG="$REPO/roofline_analysis_$(date +%Y%m%d_%H%M%S).log"
-step "Running the full roofline analysis (45-75 min on an A100); log: $LOG"
+step "Running the full roofline analysis (~1 h on a GB300, 2-4 h on an A100); log: $LOG"
 "$REPO/tools/run_roofline_analysis.sh" 2>&1 | tee "$LOG"
 
 step "Summary"
